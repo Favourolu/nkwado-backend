@@ -83,6 +83,24 @@ export async function uploadManyToS3(files: UploadableFile[], folder: string): P
 
 const DEFAULT_SIGNED_URL_TTL_SECONDS = 15 * 60;
 
+// Rows written before the presigned-URL migration stored the full public
+// `https://bucket.s3.region.amazonaws.com/key` (or `local://uploads/key`) string, not a bare
+// key. Normalize either shape down to the key so old records still resolve correctly instead
+// of getting signed as if the whole URL were the object key (which S3 rejects outright).
+function normalizeToKey(value: string): string {
+  if (value.startsWith('local://uploads/')) {
+    return value.slice('local://uploads/'.length);
+  }
+  if (/^https?:\/\//.test(value)) {
+    try {
+      return decodeURIComponent(new URL(value).pathname.replace(/^\/+/, ''));
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
 /**
  * Resolves a stored object key to a short-lived, authenticated download link. Replaces the
  * old permanent public `https://bucket.s3.region.amazonaws.com/key` scheme — nothing served
@@ -94,12 +112,13 @@ export async function getSignedDownloadUrl(
   expiresInSeconds: number = DEFAULT_SIGNED_URL_TTL_SECONDS
 ): Promise<string | null> {
   if (!key) return null;
+  const normalizedKey = normalizeToKey(key);
 
   if (useLocalFallback) {
-    return `local://uploads/${key}`;
+    return `local://uploads/${normalizedKey}`;
   }
 
-  return getSignedUrl(s3!, new GetObjectCommand({ Bucket: BUCKET, Key: key }), {
+  return getSignedUrl(s3!, new GetObjectCommand({ Bucket: BUCKET, Key: normalizedKey }), {
     expiresIn: expiresInSeconds,
   });
 }
