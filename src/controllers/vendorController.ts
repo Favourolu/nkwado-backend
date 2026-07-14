@@ -4,6 +4,7 @@ import { AppError } from '../middleware/errorHandler';
 import { onboardVendorSchema, submitQuoteSchema } from '../validation/vendorValidation';
 import { uploadToS3, uploadManyToS3, UploadableFile } from '../services/s3Service';
 import { sendEmail } from '../services/emailService';
+import { quoteSubmittedEmail } from '../services/emailTemplates';
 
 type MulterFiles = { [fieldname: string]: Express.Multer.File[] };
 
@@ -196,8 +197,11 @@ export async function submitQuote(req: Request, res: Response, next: NextFunctio
     const customerEmail = eventRequest.customer.user.email;
     await sendEmail({
       to: customerEmail,
-      subject: `New quote from ${vendor.businessName}`,
-      html: `<p>${vendor.businessName} submitted a quote of ₦${value.basePrice.toLocaleString()} for your ${eventRequest.eventType.toLowerCase()} event.</p>`,
+      ...quoteSubmittedEmail({
+        businessName: vendor.businessName,
+        basePrice: value.basePrice,
+        eventType: eventRequest.eventType,
+      }),
     });
 
     res.status(201).json({ quote });
