@@ -220,6 +220,7 @@ model Quote {
   submittedAt  DateTime? // When vendor responded
   deadlineAt   DateTime // 24h from sentAt
   respondedAt  DateTime? // When vendor submitted
+  reminderSentAt DateTime? // Set once the approaching-deadline reminder email has gone out
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -325,3 +325,72 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
     next(err);
   }
 }
+
+const PROGRESS_STAGE_SLUGS = ['questionnaire', 'vendor_matching', 'select_vendors', 'booking', 'payment'] as const;
+
+export async function getProgress(req: Request, res: Response, next: NextFunction) {
+  try {
+    const requestId = String(req.params.requestId);
+    const customer = await getCustomerOrThrow(req.user!.userId);
+    const eventRequest = await getOwnedRequestOrThrow(requestId, customer.id);
+
+    const quotes = await prisma.quote.findMany({ where: { requestId } });
+    const booking = await prisma.booking.findFirst({ where: { requestId } });
+
+    const matches = (eventRequest.aiMatchedVendors as unknown as VendorMatch[] | null) || [];
+    const hasMatches = matches.length > 0;
+    // expiresAt is set to matchedAt + 24h at match time (see submitQuestionnaire), so this
+    // recovers the match timestamp without a dedicated column.
+    const matchedAt = hasMatches && eventRequest.expiresAt
+      ? new Date(eventRequest.expiresAt.getTime() - 24 * 60 * 60 * 1000)
+      : null;
+
+    const submittedQuotes = quotes.filter((q) => q.submittedAt !== null);
+    const hasSubmittedQuotes = submittedQuotes.length > 0;
+    const firstQuoteAt = submittedQuotes.reduce<Date | null>(
+      (earliest, q) => (!earliest || (q.submittedAt as Date) < earliest ? (q.submittedAt as Date) : earliest),
+      null
+    );
+
+    const bookingConfirmed = !!booking && ['CONFIRMED', 'PAID', 'COMPLETED'].includes(booking.status);
+    const paymentCompleted = !!booking && ['PAID', 'COMPLETED'].includes(booking.status);
+
+    const steps = [
+      { name: 'Tell us about your event', status: 'completed', date: eventRequest.createdAt },
+      {
+        name: "We're matching vendors",
+        status: hasMatches ? 'completed' : 'in_progress',
+        date: hasMatches ? matchedAt : null,
+      },
+      {
+        name: 'Review vendor quotes',
+        status: bookingConfirmed ? 'completed' : hasSubmittedQuotes ? 'in_progress' : 'pending',
+        date: hasSubmittedQuotes ? firstQuoteAt : null,
+      },
+      {
+        name: 'Confirm your booking',
+        status: bookingConfirmed ? 'completed' : 'pending',
+        date: bookingConfirmed ? booking!.createdAt : null,
+      },
+      {
+        name: 'Complete payment',
+        status: paymentCompleted ? 'completed' : 'pending',
+        date: paymentCompleted ? booking!.updatedAt : null,
+      },
+    ];
+
+    const completed = PROGRESS_STAGE_SLUGS.filter((_, i) => steps[i].status === 'completed');
+    const pending = PROGRESS_STAGE_SLUGS.filter((_, i) => steps[i].status !== 'completed');
+
+    let stage: string;
+    if (paymentCompleted) stage = 'completed';
+    else if (bookingConfirmed) stage = 'payment_pending';
+    else if (hasSubmittedQuotes) stage = 'quotes_received';
+    else if (hasMatches) stage = 'awaiting_quotes';
+    else stage = 'questionnaire';
+
+    res.json({ progress: { stage, completed, pending, steps } });
+  } catch (err) {
+    next(err);
+  }
+}

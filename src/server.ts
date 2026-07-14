@@ -3,6 +3,7 @@ dotenv.config();
 
 import app from './app';
 import prisma from './utils/prisma';
+import { startDeadlineReminderJob } from './jobs/deadlineReminderJob';
 
 const PORT = process.env.PORT || 3001;
 
@@ -10,6 +11,8 @@ async function start() {
   try {
     await prisma.$connect();
     console.log('Database connection established');
+
+    startDeadlineReminderJob();
 
     app.listen(PORT, () => {
       console.log(`Nkwado backend listening on port ${PORT}`);

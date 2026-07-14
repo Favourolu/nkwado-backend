@@ -7,6 +7,7 @@ import {
   customizeRequest,
   createBooking,
   listBookings,
+  getProgress,
 } from '../controllers/customerController';
 
 const router = Router();
@@ -19,5 +20,6 @@ router.get('/requests/:requestId/quotes', getRequestQuotes);
 router.post('/customize/:requestId', customizeRequest);
 router.post('/booking/:requestId', createBooking);
 router.get('/bookings', listBookings);
+router.get('/progress/:requestId', getProgress);
 
 export default router;

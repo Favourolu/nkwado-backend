@@ -15,8 +15,12 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
       the real Claude API (user opted to defer providing an API key — see note 7 below)
 - [x] Session 5 — `POST /customers/customize/:requestId`, `POST /customers/booking/:requestId`
       (PDF bill generation via jsPDF, uploaded through the existing S3 service), `GET /customers/bookings`
-- [ ] Session 6 — Progress tracking + deadline reminders (node-cron) — **next up**
-- [ ] Session 7 — Admin vendor vetting routes
+- [x] Session 6 — `GET /customers/progress/:requestId` (stage/completed/pending/steps derived from
+      `EventRequest`/`Quote`/`Booking` state, no dedicated tracking table); node-cron job
+      (`src/jobs/deadlineReminderJob.ts`, default every 5 min) emails vendor+customer once a
+      `PENDING` quote enters its final hour before `deadlineAt`, then flips it to `EXPIRED` once
+      the deadline passes
+- [ ] Session 7 — Admin vendor vetting routes — **next up**
 - [ ] Session 8 — Admin dashboard routes
 - [ ] Sessions 9–16 — Frontend (separate Next.js repo, not started)
 - [ ] Session 17 — Email templates (base Resend integration already in from Session 3)
@@ -85,6 +89,21 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
    working for the spec's text-only bill layout (booking ID, event details, vendor list, price
    breakdown). Uploaded through the same S3 service/`FILE_STORAGE_DRIVER` fallback as vendor docs
    (note 4), under an S3 `bills/` prefix.
+
+10. **Progress tracker (Session 6) has no dedicated table** — `GET /customers/progress/:requestId`
+    derives `stage`/`completed`/`pending`/`steps` entirely from existing `EventRequest`, `Quote`,
+    and `Booking` state; the "vendor matching" step's timestamp is recovered as
+    `expiresAt - 24h` since matching sets `expiresAt` to exactly `matchedAt + 24h` and there's no
+    separate `matchedAt` column. "Complete payment" will read `pending` for the whole MVP unless
+    `Booking.status` is manually moved to `PAID`/`COMPLETED` — there's no real payment integration
+    per the spec's assumption that Moses handles payment via Parthian separately.
+
+11. **`Quote.reminderSentAt DateTime?` added to schema** (Session 6) purely so the deadline-reminder
+    cron job (`src/jobs/deadlineReminderJob.ts`, `src/services/reminderService.ts`) doesn't re-email
+    the same quote every 5-minute tick — set once when a `PENDING` quote enters its final hour
+    before `deadlineAt`. Reminder lead time (1h) and cron cadence (`REMINDER_CRON_SCHEDULE`,
+    default `*/5 * * * *`) are both easy to tune later; tested locally with a temporary 10-second
+    6-field cron override to avoid a real 24h wait.
 
 ## Local dev setup (already done in this container, redo if it's fresh)
 
