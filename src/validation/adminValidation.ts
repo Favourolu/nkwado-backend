@@ -5,7 +5,12 @@ export const rejectVendorSchema = Joi.object({
   rejectionReason: Joi.string().trim().min(1).required(),
 });
 
-export const EVENT_REQUEST_STATUSES = ['pending', 'matched', 'quoted', 'booked'];
+export const pendingVendorsQuerySchema = Joi.object({
+  limit: Joi.number().integer().min(1).max(100).default(25),
+  offset: Joi.number().integer().min(0).default(0),
+});
+
+export const EVENT_REQUEST_STATUSES = ['PENDING', 'MATCHED', 'QUOTED', 'BOOKED'];
 export const BOOKING_STATUSES = ['PENDING', 'CONFIRMED', 'PAID', 'COMPLETED', 'CANCELLED'];
 
 export const listRequestsQuerySchema = Joi.object({

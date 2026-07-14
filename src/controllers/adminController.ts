@@ -6,21 +6,49 @@ import {
   rejectVendorSchema,
   listRequestsQuerySchema,
   listBookingsQuerySchema,
+  pendingVendorsQuerySchema,
 } from '../validation/adminValidation';
 import { sendEmail } from '../services/emailService';
 import { vendorApprovedEmail, vendorRejectedEmail } from '../services/emailTemplates';
 import { logAdminActivity } from '../services/adminActivityService';
+import { getSignedDownloadUrl, getSignedDownloadUrls } from '../services/s3Service';
 
 const REVENUE_COUNTED_STATUSES: BookingStatus[] = ['CONFIRMED', 'PAID', 'COMPLETED'];
 
 export async function getPendingVendors(req: Request, res: Response, next: NextFunction) {
   try {
-    const vendors = await prisma.vendor.findMany({
-      where: { status: 'PENDING' },
-      orderBy: { createdAt: 'asc' },
-    });
+    const { error, value } = pendingVendorsQuerySchema.validate(req.query);
+    if (error) {
+      throw new AppError(error.details[0].message, 400);
+    }
 
-    res.json({ vendors });
+    const [total, vendors] = await Promise.all([
+      prisma.vendor.count({ where: { status: 'PENDING' } }),
+      prisma.vendor.findMany({
+        where: { status: 'PENDING' },
+        orderBy: { createdAt: 'asc' }, // oldest-waiting first, surfaced explicitly via waitingDays below
+        take: value.limit,
+        skip: value.offset,
+      }),
+    ]);
+
+    const now = Date.now();
+    const withDocs = await Promise.all(
+      vendors.map(async (vendor) => {
+        const [cacDocument, supportingDocuments, profilePhotos] = await Promise.all([
+          getSignedDownloadUrl(vendor.cacDocument),
+          getSignedDownloadUrls(vendor.supportingDocuments),
+          getSignedDownloadUrls(vendor.profilePhotos),
+        ]);
+        const waitingDays = Math.floor((now - vendor.createdAt.getTime()) / (24 * 60 * 60 * 1000));
+        return { ...vendor, cacDocument, supportingDocuments, profilePhotos, waitingDays };
+      })
+    );
+
+    res.json({
+      vendors: withDocs,
+      pagination: { total, limit: value.limit, offset: value.offset, hasMore: value.offset + vendors.length < total },
+    });
   } catch (err) {
     next(err);
   }
@@ -161,23 +189,26 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
       orderBy: { createdAt: 'desc' },
     });
 
-    const formatted = bookings.map((booking) => ({
-      id: booking.id,
-      customer: {
-        firstName: booking.customer.user.firstName,
-        lastName: booking.customer.user.lastName,
-        email: booking.customer.user.email,
-      },
-      eventType: booking.request.eventType,
-      eventDate: booking.request.eventDate,
-      selectedVendors: booking.selectedVendors,
-      subtotal: booking.subtotal,
-      serviceCharge: booking.serviceCharge,
-      totalAmount: booking.totalAmount,
-      status: booking.status,
-      paymentStatus: booking.paymentStatus,
-      createdAt: booking.createdAt,
-    }));
+    const formatted = await Promise.all(
+      bookings.map(async (booking) => ({
+        id: booking.id,
+        customer: {
+          firstName: booking.customer.user.firstName,
+          lastName: booking.customer.user.lastName,
+          email: booking.customer.user.email,
+        },
+        eventType: booking.request.eventType,
+        eventDate: booking.request.eventDate,
+        selectedVendors: booking.selectedVendors,
+        subtotal: booking.subtotal,
+        serviceCharge: booking.serviceCharge,
+        totalAmount: booking.totalAmount,
+        status: booking.status,
+        paymentStatus: booking.paymentStatus,
+        billPdfUrl: await getSignedDownloadUrl(booking.billPdfUrl),
+        createdAt: booking.createdAt,
+      }))
+    );
 
     res.json({ bookings: formatted });
   } catch (err) {
@@ -200,7 +231,7 @@ export async function getDashboardMetrics(req: Request, res: Response, next: Nex
       prisma.vendor.count({ where: { status: 'PENDING' } }),
       prisma.vendor.count({ where: { status: 'APPROVED' } }),
       prisma.customer.count(),
-      prisma.eventRequest.count({ where: { status: { in: ['pending', 'matched', 'quoted'] } } }),
+      prisma.eventRequest.count({ where: { status: { in: ['PENDING', 'MATCHED', 'QUOTED'] } } }),
       prisma.booking.count({ where: { status: 'COMPLETED' } }),
       prisma.booking.findMany({
         where: { status: { in: REVENUE_COUNTED_STATUSES } },
@@ -223,6 +254,44 @@ export async function getDashboardMetrics(req: Request, res: Response, next: Nex
         averageEventValue,
       },
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// The cron itself firing on schedule is what proves it's alive - if it's genuinely dead,
+// no tick ever writes a fresh heartbeat, so a stale timestamp here (rather than any
+// push-based alert, out of scope for this MVP) is the detection signal.
+const HEARTBEAT_STALE_AFTER_MS = 15 * 60 * 1000; // 3x the default 5-minute cron cadence
+
+export async function getCronHealth(req: Request, res: Response, next: NextFunction) {
+  try {
+    const heartbeats = await prisma.cronHeartbeat.findMany();
+    const now = Date.now();
+
+    const jobs = heartbeats.map((h) => ({
+      name: h.name,
+      lastRunAt: h.lastRunAt,
+      lastRunOk: h.lastRunOk,
+      lastError: h.lastError,
+      stale: now - h.lastRunAt.getTime() > HEARTBEAT_STALE_AFTER_MS,
+    }));
+
+    const healthy = jobs.length > 0 && jobs.every((j) => j.lastRunOk && !j.stale);
+
+    res.status(healthy ? 200 : 503).json({ healthy, jobs });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getEmailFailures(req: Request, res: Response, next: NextFunction) {
+  try {
+    const failures = await prisma.emailFailure.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    res.json({ failures });
   } catch (err) {
     next(err);
   }

@@ -33,7 +33,7 @@ export async function register(req: Request, res: Response, next: NextFunction) 
       },
     });
 
-    const token = signToken({ userId: user.id, email: user.email, role: user.role });
+    const token = signToken({ userId: user.id, email: user.email, role: user.role, tokenVersion: user.tokenVersion });
 
     res.status(201).json({
       token,
@@ -63,12 +63,26 @@ export async function login(req: Request, res: Response, next: NextFunction) {
       throw new AppError('Invalid email or password', 401);
     }
 
-    const token = signToken({ userId: user.id, email: user.email, role: user.role });
+    const token = signToken({ userId: user.id, email: user.email, role: user.role, tokenVersion: user.tokenVersion });
 
     res.status(200).json({
       token,
       user: { id: user.id, email: user.email, role: user.role },
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Bumps the user's tokenVersion, immediately invalidating every previously-issued JWT
+ *  (there's no separate session store to delete from — this is the revocation mechanism). */
+export async function logoutAll(req: Request, res: Response, next: NextFunction) {
+  try {
+    await prisma.user.update({
+      where: { id: req.user!.userId },
+      data: { tokenVersion: { increment: 1 } },
+    });
+    res.json({ message: 'Logged out of all sessions' });
   } catch (err) {
     next(err);
   }

@@ -40,6 +40,9 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
       S3 file upload, and DB writes all confirmed working against the production URL
       `https://nkwado-backend-production.up.railway.app`. See notes 14–16 below for what came up
       during deployment.
+- [x] Post-deployment — Full architecture audit (failure-mode map across DB integrity, auth,
+      file uploads, external APIs, quote deadlines, admin SPOF) followed by fixing every finding.
+      See note 18 below.
 
 ## Key deviations from the spec (and why)
 
@@ -199,6 +202,93 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
     stays backward compatible. Note: `VENUE`, `DRESSES`, `SUITS` etc. were already valid
     `VendorCategory` values before this change — matching was never vendor(-service)-only in the
     "catering only" sense, it just couldn't be scoped to what the customer actually wanted.
+
+18. **Architecture audit + fixes, post-deployment.** Ran a full failure-mode audit (DB integrity,
+    auth bypass, file upload security, external API failures, quote-deadline brittleness, admin
+    single point of failure), delivered as an Artifact, then fixed every finding it surfaced.
+    Migrations: `20260714160000_audit_fixes_schema`, `20260714161500_quote_submitted_reminder`.
+    - **Booking-creation race (was the most serious finding — real double-booking risk).**
+      `createBooking` now runs in a `prisma.$transaction`: it creates the `Booking` row, then does
+      a single conditional `Quote.updateMany` (`WHERE status = 'SUBMITTED' AND bookingId IS NULL`)
+      setting `bookingId`/`status: 'ACCEPTED'`; if the updated count doesn't match the selection,
+      the whole transaction throws and rolls back with a 409 instead of silently double-booking.
+      `Booking.selectedQuoteIds`/`selectedVendorIds` (plain, unenforced `String[]` columns that
+      could diverge from the real `selectedVendors` relation) are gone — `Quote.bookingId` is a
+      real FK now, and `Booking.quotes` is the back-relation. Verified locally by firing two
+      concurrent booking requests for the same quote: one succeeds, one gets the 409, exactly one
+      `Booking` row and one `ACCEPTED` `Quote` row exist afterward.
+    - **File upload / stored-XSS risk.** `uploadVendorDocs` (`middleware/upload.ts`) now has a
+      `fileFilter` allowlisting only `application/pdf`/`image/jpeg`/`image/png`, plus an aggregate
+      60MB-per-request cap enforced in `onboardVendor` (multer has no native aggregate limit).
+      `s3Service.ts` no longer trusts the client-supplied `mimetype` for the stored
+      `Content-Type` — it's derived server-side from the (now-restricted) file extension — and
+      sets `ContentDisposition: attachment` so a browser downloads rather than renders. `uploadToS3`
+      now returns the **object key**, not a permanent public URL; nothing is publicly reachable
+      any more. `getSignedDownloadUrl()`/`getSignedDownloadUrls()` mint short-lived (15 min)
+      presigned `GetObjectCommand` URLs on read, wired into `getVendorProfile`,
+      `admin.getPendingVendors`, and both `listBookings` endpoints (bill PDFs). Stored
+      `cacDocument`/`supportingDocuments`/`profilePhotos`/`billPdfUrl` values are keys now, not
+      URLs — the local-disk fallback (`FILE_STORAGE_DRIVER=local`) still returns a `local://`
+      pseudo-URL for both the key and the "signed" URL, since there's nothing to actually sign
+      in dev. Verified locally: uploading a `.html` file as `cacDocument` gets rejected with 400;
+      a real PDF is accepted, stored as a key, and resolves to a working link on read.
+    - **Auth hardening.** `POST /auth/login` and `/auth/register` are now rate-limited
+      (`express-rate-limit`; login is keyed on IP+email, 10/15min — register is 20/hour per IP).
+      `app.set('trust proxy', 1)` added in `app.ts` since Railway sits behind a reverse proxy and
+      express-rate-limit needs that to read the real client IP from `X-Forwarded-For` correctly.
+      `User.tokenVersion` (default 0) is now embedded in every JWT payload and re-checked against
+      the DB on every `authenticate` call — `POST /auth/logout-all` bumps it, immediately
+      invalidating every previously-issued token for that user (there's no other revocation
+      mechanism, since JWTs aren't stored server-side). One-time consequence: everyone's existing
+      pre-this-deploy token is implicitly invalidated the first time `authenticate` runs post-
+      deploy (their token has no `tokenVersion` claim, which never matches the DB's `0`) — a
+      one-off forced re-login, not a bug. Verified locally: old token rejected with 401
+      ("Session has been revoked...") immediately after calling `/auth/logout-all`; 12 rapid bad
+      logins started returning 429 after the 10th.
+    - **Quote deadline system.** `SUBMITTED` quotes previously never auto-expired (only `PENDING`
+      ones did) — a customer could sit on a vendor's quote forever. `Quote.submittedExpiresAt` is
+      now set to `submittedAt + 7 days` in `vendorController.submitQuote`, and
+      `reminderService.expireOverdueSubmittedQuotes()` flips any `SUBMITTED`, still-unbooked
+      (`bookingId IS NULL`) quote past that timestamp to `EXPIRED` — safe against the booking
+      transaction because Postgres row-locking serializes the two conditional updates.
+      `sendApproachingSubmittedExpiryReminders()` emails the customer 24h before that happens
+      (`submittedQuoteExpiringEmail` in `emailTemplates.ts`), gated by a separate
+      `Quote.submittedReminderSentAt` column (kept distinct from the existing `reminderSentAt`,
+      which guards the earlier PENDING-phase reminder on the same row). Both `Quote.updateMany`
+      expiry paths now bump a new `Quote.version` column (optimistic-lock bookkeeping, not
+      currently read anywhere but there for a future concurrent-writer check). The cron
+      (`deadlineReminderJob.ts`) now writes a `CronHeartbeat` row on every tick, success or
+      failure — `GET /admin/health/cron` reads it and reports `stale: true` if the gap since
+      `lastRunAt` exceeds 3x the cron cadence, so a crashed/stuck cron process is externally
+      detectable instead of just silently not firing.
+    - **Email failure visibility.** `sendEmail()` (`emailService.ts`) now retries a failed Resend
+      call up to 3 times with linear backoff before giving up, and on final failure persists an
+      `EmailFailure` row (`to`/`subject`/`error`/`attempts`) instead of only `console.error`-ing —
+      `GET /admin/email-failures` (most recent 100) makes "did this vendor actually get notified"
+      queryable instead of silently unknowable.
+    - **DB connection pool.** `utils/prisma.ts` now appends `?connection_limit=<DB_CONNECTION_LIMIT
+      (default 20)>` to `DATABASE_URL` at `PrismaClient` construction instead of relying on
+      Prisma's auto-detected default (a small multiple of CPU cores, easily undersized on a small
+      Railway container under real concurrent load). Tune via the `DB_CONNECTION_LIMIT` env var;
+      keep in mind Railway's Postgres plugin has its own `max_connections` ceiling shared across
+      every service in the project, so this shouldn't be raised in isolation without checking that.
+    - **Admin pagination.** `GET /admin/vendors/pending` now takes `?limit=&offset=` (Joi-validated,
+      default 25/0, max 100) and returns a `pagination` block (`total`/`limit`/`offset`/`hasMore`),
+      plus a `waitingDays` field per vendor so a growing backlog is triageable instead of an
+      unpaginated wall of rows sorted only oldest-first.
+    - **Schema cleanup.** `EventRequest.status` (was a free-text `String`) and `Booking.paymentStatus`
+      (was a free-text `String?`) are now `RequestStatus`/`PaymentStatus` enums — `@map`'d to the
+      same lowercase DB values (`'pending'`, `'matched'`, etc.) so the migration didn't need to
+      touch existing row data, only the column type; application code was updated to reference the
+      new uppercase enum keys (`'PENDING'`, `'MATCHED'`, ...) instead of the old lowercase string
+      literals. Added `@@index([status, category])` on `Vendor` (the matching query already
+      filtered on both together; the two separate single-column indexes didn't compose as well).
+    - **Not fixed, deliberately out of scope for this pass:** the audit's "vendor deleted while
+      referenced in a booking" dangling-reference finding (`Booking.selectedVendors` is a real FK
+      relation with no cascade issue, but nothing stops a vendor being hard-deleted mid-active-
+      booking — would need soft-delete semantics, a bigger change than this pass's scope) and
+      malware/content scanning on uploads (the MIME allowlist + presigned URLs close the acute
+      XSS/public-exposure risk; AV scanning is a reasonable future addition, not blocking).
 
 ## Local dev setup (already done in this container, redo if it's fresh)
 

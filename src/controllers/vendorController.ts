@@ -2,7 +2,8 @@ import { Request, Response, NextFunction } from 'express';
 import prisma from '../utils/prisma';
 import { AppError } from '../middleware/errorHandler';
 import { onboardVendorSchema, submitQuoteSchema } from '../validation/vendorValidation';
-import { uploadToS3, uploadManyToS3, UploadableFile } from '../services/s3Service';
+import { uploadToS3, uploadManyToS3, getSignedDownloadUrl, getSignedDownloadUrls, UploadableFile } from '../services/s3Service';
+import { MAX_TOTAL_UPLOAD_SIZE } from '../middleware/upload';
 import { sendEmail } from '../services/emailService';
 import { quoteSubmittedEmail } from '../services/emailTemplates';
 
@@ -34,6 +35,16 @@ export async function onboardVendor(req: Request, res: Response, next: NextFunct
     const cacFile = files.cacDocument?.[0];
     const supportingFiles = files.supportingDocuments || [];
     const photoFiles = files.profilePhotos || [];
+
+    const totalBytes = [cacFile, ...supportingFiles, ...photoFiles]
+      .filter((f): f is Express.Multer.File => !!f)
+      .reduce((sum, f) => sum + f.size, 0);
+    if (totalBytes > MAX_TOTAL_UPLOAD_SIZE) {
+      throw new AppError(
+        `Total upload size exceeds the ${MAX_TOTAL_UPLOAD_SIZE / (1024 * 1024)}MB limit`,
+        400
+      );
+    }
 
     const [cacDocument, supportingDocuments, profilePhotos] = await Promise.all([
       cacFile ? uploadToS3(cacFile as UploadableFile, 'cac-documents') : Promise.resolve(undefined),
@@ -102,7 +113,15 @@ export async function getVendorProfile(req: Request, res: Response, next: NextFu
 
     const { reviews, ...vendorData } = vendor;
 
-    res.json({ vendor: { ...vendorData, rating, reviewCount } });
+    const [cacDocument, supportingDocuments, profilePhotos] = await Promise.all([
+      getSignedDownloadUrl(vendorData.cacDocument),
+      getSignedDownloadUrls(vendorData.supportingDocuments),
+      getSignedDownloadUrls(vendorData.profilePhotos),
+    ]);
+
+    res.json({
+      vendor: { ...vendorData, cacDocument, supportingDocuments, profilePhotos, rating, reviewCount },
+    });
   } catch (err) {
     next(err);
   }
@@ -175,6 +194,7 @@ export async function submitQuote(req: Request, res: Response, next: NextFunctio
     }
 
     const submittedAt = new Date();
+    const SUBMITTED_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days for the customer to decide
 
     const quote = await prisma.quote.update({
       where: { id: invitation.id },
@@ -185,13 +205,14 @@ export async function submitQuote(req: Request, res: Response, next: NextFunctio
         status: 'SUBMITTED',
         submittedAt,
         respondedAt: submittedAt,
+        submittedExpiresAt: new Date(submittedAt.getTime() + SUBMITTED_EXPIRY_MS),
       },
     });
 
-    if (eventRequest.status === 'matched') {
+    if (eventRequest.status === 'MATCHED') {
       await prisma.eventRequest.update({
         where: { id: requestId },
-        data: { status: 'quoted' },
+        data: { status: 'QUOTED' },
       });
     }
 

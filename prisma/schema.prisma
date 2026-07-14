@@ -18,20 +18,23 @@ enum UserRole {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  password  String // bcrypted
-  firstName String
-  lastName  String
-  phone     String?
-  role      UserRole @default(CUSTOMER)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(cuid())
+  email        String   @unique
+  password     String // bcrypted
+  firstName    String
+  lastName     String
+  phone        String?
+  role         UserRole @default(CUSTOMER)
+  // Bumped on logout-all; JWTs carry the tokenVersion they were issued with, so bumping
+  // this invalidates every previously-issued token for this user immediately.
+  tokenVersion Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   // Relations
-  customer       Customer?
-  vendor         Vendor?
-  adminActivity  AdminActivity[]
+  customer      Customer?
+  vendor        Vendor?
+  adminActivity AdminActivity[]
 
   @@index([email])
 }
@@ -77,9 +80,9 @@ enum VendorCategory {
 }
 
 model Vendor {
-  id           String         @id @default(cuid())
-  userId       String         @unique
-  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // Business info
   businessName String
@@ -90,12 +93,12 @@ model Vendor {
   phoneNumber  String?
 
   // Vetting
-  status               VendorStatus @default(PENDING)
-  cacDocument          String? // S3 URL
-  supportingDocuments  String[] // S3 URLs
-  profilePhotos        String[] // S3 URLs
-  verifiedAt           DateTime?
-  rejectionReason      String?
+  status              VendorStatus @default(PENDING)
+  cacDocument         String? // S3 object key (not a public URL - resolved to a presigned URL on read, see s3Service)
+  supportingDocuments String[] // S3 object keys
+  profilePhotos       String[] // S3 object keys
+  verifiedAt          DateTime?
+  rejectionReason     String?
 
   // Pricing & Services
   priceRange String? // e.g., "₦50k-200k per event"
@@ -107,18 +110,19 @@ model Vendor {
   // Relations
   listings VendorListing[]
   quotes   Quote[]
-  bookings Booking[] @relation("BookingSelectedVendors")
+  bookings Booking[]       @relation("BookingSelectedVendors")
   reviews  Review[]
 
   @@index([userId])
   @@index([status])
   @@index([category])
+  @@index([status, category])
 }
 
 model VendorListing {
-  id           String         @id @default(cuid())
-  vendorId     String
-  vendor       Vendor         @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  id       String @id @default(cuid())
+  vendorId String
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
 
   title        String
   description  String?
@@ -152,9 +156,16 @@ enum EventType {
 enum BudgetRange {
   ZERO_TO_500K // ₦0-500k
   FROM_500K_TO_1M @map("_500K_TO_1M") // ₦500k-1m
-  FROM_1M_TO_3M @map("_1M_TO_3M") // ₦1m-3m
-  FROM_3M_TO_5M @map("_3M_TO_5M") // ₦3m-5m
+  FROM_1M_TO_3M   @map("_1M_TO_3M") // ₦1m-3m
+  FROM_3M_TO_5M   @map("_3M_TO_5M") // ₦3m-5m
   ABOVE_5M // ₦5m+
+}
+
+enum RequestStatus {
+  PENDING @map("pending") // Just submitted, not yet matched
+  MATCHED @map("matched") // Vendor invitations sent
+  QUOTED  @map("quoted") // At least one vendor has responded
+  BOOKED  @map("booked") // Customer confirmed a booking
 }
 
 model EventRequest {
@@ -163,7 +174,7 @@ model EventRequest {
   customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   // Event details
-  eventType           EventType
+  eventType            EventType
   eventDate            DateTime?
   guestCount           Int?
   location             String?
@@ -179,7 +190,7 @@ model EventRequest {
 
   // AI Matching
   aiMatchedVendors Json? // [{vendorId, category, reason}]
-  status           String   @default("pending") // pending, matched, quoted, booked
+  status           RequestStatus @default(PENDING)
 
   // Customer customization (POST /customers/customize/:requestId)
   customizationNotes String?
@@ -213,18 +224,30 @@ model Quote {
   vendorId  String
   vendor    Vendor       @relation(fields: [vendorId], references: [id], onDelete: Cascade)
 
+  // Set once a booking accepts this quote. Real FK (replaces the old array-based
+  // Booking.selectedQuoteIds) so the DB enforces "a quote belongs to at most one booking"
+  // and the accept step can be a single conditional UPDATE guarded on this being null.
+  bookingId String?
+  booking   Booking? @relation(fields: [bookingId], references: [id])
+
   // Quote details
-  basePrice    Float? // Vendor's quoted price (gross); null until the vendor responds (status SUBMITTED+)
-  itemization  Json? // [{item, qty, unitPrice, total}]
-  notes        String? // Vendor notes
-  status       QuoteStatus @default(PENDING)
+  basePrice   Float? // Vendor's quoted price (gross); null until the vendor responds (status SUBMITTED+)
+  itemization Json? // [{item, qty, unitPrice, total}]
+  notes       String? // Vendor notes
+  status      QuoteStatus @default(PENDING)
+
+  // Optimistic lock: every conditional update (booking accept, cron expiry) bumps this,
+  // so two concurrent writers touching the same row can detect and lose the race cleanly.
+  version Int @default(0)
 
   // Timeline
-  sentAt       DateTime  @default(now()) // When the invitation was sent to the vendor
-  submittedAt  DateTime? // When vendor responded
-  deadlineAt   DateTime // 24h from sentAt
-  respondedAt  DateTime? // When vendor submitted
-  reminderSentAt DateTime? // Set once the approaching-deadline reminder email has gone out
+  sentAt             DateTime  @default(now()) // When the invitation was sent to the vendor
+  submittedAt        DateTime? // When vendor responded
+  deadlineAt         DateTime // 24h from sentAt (PENDING -> response window)
+  submittedExpiresAt DateTime? // Set at submission time; a SUBMITTED quote never booked by this point auto-expires
+  respondedAt        DateTime? // When vendor submitted
+  reminderSentAt     DateTime? // Set once the approaching-deadline (PENDING phase) reminder email has gone out
+  submittedReminderSentAt DateTime? // Set once the approaching-submittedExpiresAt (SUBMITTED phase) reminder has gone out
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -233,6 +256,7 @@ model Quote {
   @@index([requestId])
   @@index([vendorId])
   @@index([status])
+  @@index([bookingId])
 }
 
 // ============= BOOKING & FINALIZATION =============
@@ -245,6 +269,13 @@ enum BookingStatus {
   CANCELLED // Booking cancelled
 }
 
+enum PaymentStatus {
+  PENDING    @map("pending")
+  PROCESSING @map("processing")
+  COMPLETED  @map("completed")
+  FAILED     @map("failed")
+}
+
 model Booking {
   id         String       @id @default(cuid())
   customerId String
@@ -252,10 +283,11 @@ model Booking {
   requestId  String
   request    EventRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
 
-  // Selected vendors
-  selectedQuoteIds  String[] // Array of Quote IDs customer selected
-  selectedVendorIds String[] // Array of Vendor IDs
-  selectedVendors   Vendor[] @relation("BookingSelectedVendors")
+  // Selected vendors. Real relations only (see CLAUDE.md deviation note) — the old
+  // selectedQuoteIds/selectedVendorIds plain-array columns were dropped because they
+  // were a second, unenforced source of truth alongside these and could silently diverge.
+  quotes          Quote[] // Back-relation from Quote.bookingId — the accepted quotes
+  selectedVendors Vendor[] @relation("BookingSelectedVendors")
 
   // Pricing
   subtotal      Float // Sum of all vendor quotes
@@ -263,13 +295,13 @@ model Booking {
   totalAmount   Float // subtotal + serviceCharge
 
   // Bill
-  billPdfUrl      String? // S3 URL to generated PDF
+  billPdfUrl      String? // S3 object key of the generated PDF (not a public URL - see s3Service)
   billGeneratedAt DateTime?
 
   // Payment
-  status         BookingStatus @default(PENDING)
-  paymentStatus  String? // "pending", "processing", "completed", "failed"
-  paymentId      String? // Reference to Parthian payment
+  status        BookingStatus  @default(PENDING)
+  paymentStatus PaymentStatus?
+  paymentId     String? // Reference to Parthian payment
 
   // Tracking
   createdAt DateTime @default(now())
@@ -283,9 +315,9 @@ model Booking {
 // ============= REVIEWS & RATINGS =============
 
 model Review {
-  id         String   @id @default(cuid())
+  id         String @id @default(cuid())
   vendorId   String
-  vendor     Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendor     Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
   customerId String // Not a FK to allow anonymous reviews later
 
   rating  Int // 1-5
@@ -312,4 +344,30 @@ model AdminActivity {
 
   @@index([adminId])
   @@index([action])
+}
+
+// ============= OPERATIONAL / OBSERVABILITY =============
+
+// One row per named background job; updated on every successful tick so an external
+// monitor (or GET /admin/health/cron) can detect a dead cron process from a stale timestamp
+// instead of reminders/expiry silently stopping with no signal.
+model CronHeartbeat {
+  name      String   @id // e.g. "deadlineReminderJob"
+  lastRunAt DateTime @default(now())
+  lastRunOk Boolean  @default(true)
+  lastError String?
+}
+
+// Persisted record of a failed sendEmail() call. Previously these were console.error'd
+// and lost; this makes "did the vendor actually get notified" queryable/admin-visible
+// instead of silent.
+model EmailFailure {
+  id        String   @id @default(cuid())
+  to        String
+  subject   String
+  error     String
+  attempts  Int      @default(1)
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
 }

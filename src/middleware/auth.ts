@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { verifyToken, JwtPayload } from '../utils/jwt';
 import { AppError } from './errorHandler';
+import prisma from '../utils/prisma';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -11,7 +12,7 @@ declare global {
   }
 }
 
-export function authenticate(req: Request, res: Response, next: NextFunction) {
+export async function authenticate(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
 
   if (!header || !header.startsWith('Bearer ')) {
@@ -20,13 +21,26 @@ export function authenticate(req: Request, res: Response, next: NextFunction) {
 
   const token = header.slice('Bearer '.length);
 
+  let payload: JwtPayload;
   try {
-    const payload = verifyToken(token);
-    req.user = payload;
-    next();
+    payload = verifyToken(token);
   } catch {
-    next(new AppError('Invalid or expired token', 401));
+    return next(new AppError('Invalid or expired token', 401));
   }
+
+  // A signature-valid, unexpired JWT can still have been explicitly revoked via
+  // logout-all — that only shows up as a tokenVersion mismatch against the DB, since
+  // nothing else about the token itself changes.
+  const user = await prisma.user.findUnique({
+    where: { id: payload.userId },
+    select: { tokenVersion: true },
+  });
+  if (!user || user.tokenVersion !== payload.tokenVersion) {
+    return next(new AppError('Session has been revoked, please log in again', 401));
+  }
+
+  req.user = payload;
+  next();
 }
 
 export function requireRole(...roles: string[]) {

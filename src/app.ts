@@ -9,6 +9,11 @@ import adminRoutes from './routes/adminRoutes';
 
 const app: Application = express();
 
+// Railway (and most PaaS hosts) sit behind a reverse proxy — without this, express-rate-limit
+// sees every request as coming from the proxy's IP and either rate-limits everyone as one
+// client or refuses to start (it validates X-Forwarded-For usage against this setting).
+app.set('trust proxy', 1);
+
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
