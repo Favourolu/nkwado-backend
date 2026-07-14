@@ -210,13 +210,13 @@ model Quote {
   vendor    Vendor       @relation(fields: [vendorId], references: [id], onDelete: Cascade)
 
   // Quote details
-  basePrice    Float // Vendor's quoted price (gross)
+  basePrice    Float? // Vendor's quoted price (gross); null until the vendor responds (status SUBMITTED+)
   itemization  Json? // [{item, qty, unitPrice, total}]
   notes        String? // Vendor notes
   status       QuoteStatus @default(PENDING)
 
   // Timeline
-  sentAt       DateTime  @default(now())
+  sentAt       DateTime  @default(now()) // When the invitation was sent to the vendor
   submittedAt  DateTime? // When vendor responded
   deadlineAt   DateTime // 24h from sentAt
   respondedAt  DateTime? // When vendor submitted
@@ -225,6 +225,7 @@ model Quote {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([requestId, vendorId])
   @@index([requestId])
   @@index([vendorId])
   @@index([status])
