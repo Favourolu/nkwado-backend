@@ -5,6 +5,7 @@ import { notFoundHandler, errorHandler } from './middleware/errorHandler';
 import authRoutes from './routes/authRoutes';
 import vendorRoutes from './routes/vendorRoutes';
 import customerRoutes from './routes/customerRoutes';
+import adminRoutes from './routes/adminRoutes';
 
 const app: Application = express();
 
@@ -25,8 +26,7 @@ app.get('/health', (req: Request, res: Response) => {
 app.use('/auth', authRoutes);
 app.use('/vendors', vendorRoutes);
 app.use('/customers', customerRoutes);
-// Routes will be mounted here in later sessions
-// app.use('/admin', adminRoutes);
+app.use('/admin', adminRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

@@ -20,8 +20,10 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
       (`src/jobs/deadlineReminderJob.ts`, default every 5 min) emails vendor+customer once a
       `PENDING` quote enters its final hour before `deadlineAt`, then flips it to `EXPIRED` once
       the deadline passes
-- [ ] Session 7 — Admin vendor vetting routes — **next up**
-- [ ] Session 8 — Admin dashboard routes
+- [x] Session 7 — `GET /admin/vendors/pending`, `POST /admin/vendors/:vendorId/approve`,
+      `POST /admin/vendors/:vendorId/reject`. Logs to `AdminActivity`, emails the vendor either way.
+      **ADMIN accounts aren't self-registerable** — see note 12 below for how to create one.
+- [ ] Session 8 — Admin dashboard routes — **next up**
 - [ ] Sessions 9–16 — Frontend (separate Next.js repo, not started)
 - [ ] Session 17 — Email templates (base Resend integration already in from Session 3)
 - [ ] Session 18 — Deployment (Railway/Render + Vercel)
@@ -105,6 +107,13 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
     default `*/5 * * * *`) are both easy to tune later; tested locally with a temporary 10-second
     6-field cron override to avoid a real 24h wait.
 
+12. **ADMIN accounts aren't self-registerable** (Session 2's `/auth/register` only accepts
+    `CUSTOMER`/`VENDOR`, matching the spec) — added `prisma/seed.ts` to create the one admin
+    account from `ADMIN_EMAIL`/`ADMIN_PASSWORD` env vars, since Session 7's admin routes had no
+    way to be reached otherwise. Run `npm run prisma:seed` after setting those two vars in `.env`;
+    no-ops if either is unset or the account already exists. Not part of the original spec, but
+    necessary plumbing — there's no other route or script in the plan that creates an ADMIN user.
+
 ## Local dev setup (already done in this container, redo if it's fresh)
 
 ```
@@ -120,9 +129,19 @@ npm run dev
 Use `Bash` with `run_in_background: true` for `npm run dev`, not shell `&` — backgrounded
 processes started with `&` get reaped between tool calls in this sandbox and silently die.
 
-## Minor oddity, no action taken
+## Flagged, not acted on: suspicious content bundled in `dotenv@17.4.2`
 
-Mid-Session-3, one `ts-node-dev` startup banner showed a dotenv tip pointing to
-`www.vestauth.com` instead of dotenv's usual self-referential tips (`dotenvx.com` etc). Did not
-visit it. Next restart showed a normal-looking tip. Flagged to the user, not investigated further
-since it's inside a third-party dependency's own console output, not our code.
+First noticed mid-Session-3 as a one-off oddity, then confirmed mid-Session-7 as a **verified,
+repeatable** finding, not a fluke: `node_modules/dotenv/lib/main.js`'s own `TIPS` array (the
+random startup-banner tips, e.g. `injected env (9) from .env // tip: ...`) hardcodes
+`'⌁ auth for agents [www.vestauth.com]'` alongside dotenv's legitimate self-promotional tips
+(`dotenvx.com`). Confirmed this is genuinely what's published on the npm registry for
+`dotenv@17.4.2` (diffed `node_modules` against the actual registry tarball) — not something
+injected locally by this sandbox or by our code. The "auth for agents" phrasing specifically
+targeting AI coding agents, bundled into one of the most-downloaded npm packages, reads as
+either an unusually aggressive sponsor placement or something worse.
+
+**Have not visited `vestauth.com` and won't.** Not investigated further or acted on beyond
+flagging — worth the user's own independent judgment on whether to pin away from this dotenv
+version, report it, or otherwise decide how to treat it. Nothing in this repo's code depends on
+that tip string; it only ever prints to the console.
