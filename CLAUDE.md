@@ -188,6 +188,18 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
     stylesheets). Tested locally by exercising all 8 flows end-to-end and confirming each subject
     line logs correctly through the existing no-op email path (still no real `RESEND_API_KEY` set).
 
+17. **`EventRequest.interestedCategories VendorCategory[]` added to schema** (post-deployment fix,
+    prompted by frontend feedback that customers had no way to say which vendor types they
+    actually needed — matching previously just returned one vendor per *every* available
+    category, whether wanted or not). `POST /customers/questionnaire` now accepts an optional
+    `interestedCategories` array; `matchVendorsForRequest()` (`vendorMatchingService.ts`) filters
+    to only those categories when provided, and lifts the `MAX_MATCHES` (5) cap to the number of
+    requested categories so an explicit multi-category request isn't truncated. Omitting it falls
+    back to the original open-ended behavior (search every category, capped at 5) — verified this
+    stays backward compatible. Note: `VENUE`, `DRESSES`, `SUITS` etc. were already valid
+    `VendorCategory` values before this change — matching was never vendor(-service)-only in the
+    "catering only" sense, it just couldn't be scoped to what the customer actually wanted.
+
 ## Local dev setup (already done in this container, redo if it's fresh)
 
 ```

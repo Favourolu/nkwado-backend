@@ -169,6 +169,10 @@ model EventRequest {
   location             String?
   budgetRange          BudgetRange
   specialRequirements  String? // Text description
+  // Which vendor categories the customer actually wants matched (e.g. only CATERING + VENUE,
+  // not every category with an available vendor). Empty/omitted falls back to matching across
+  // all available categories, for backward compatibility.
+  interestedCategories VendorCategory[]
 
   // Questionnaire responses (JSON for flexibility)
   questionnaire Json? // Stores all Q&A pairs

@@ -1,4 +1,5 @@
 import Joi from 'joi';
+import { VENDOR_CATEGORIES } from './vendorValidation';
 
 export const EVENT_TYPES = [
   'BIRTHDAY',
@@ -35,6 +36,12 @@ export const questionnaireSchema = Joi.object({
     .required(),
   specialRequirements: Joi.string().trim().optional().allow(''),
   questionnaire: Joi.object().unknown(true).optional(),
+  // Which vendor types the customer actually wants matched (e.g. only CATERING + VENUE).
+  // Omit or leave empty to match across every available category (previous behavior).
+  interestedCategories: Joi.array()
+    .items(Joi.string().valid(...VENDOR_CATEGORIES))
+    .optional()
+    .default([]),
 });
 
 export const customizeRequestSchema = Joi.object({
