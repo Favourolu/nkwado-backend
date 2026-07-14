@@ -96,6 +96,34 @@ export async function submitQuestionnaire(req: Request, res: Response, next: Nex
   }
 }
 
+export async function listMyRequests(req: Request, res: Response, next: NextFunction) {
+  try {
+    const customer = await getCustomerOrThrow(req.user!.userId);
+
+    const requests = await prisma.eventRequest.findMany({
+      where: { customerId: customer.id },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const formatted = requests.map((r) => ({
+      id: r.id,
+      eventType: r.eventType,
+      eventDate: r.eventDate,
+      guestCount: r.guestCount,
+      location: r.location,
+      budgetRange: r.budgetRange,
+      specialRequirements: r.specialRequirements,
+      status: r.status, // 'PENDING' | 'MATCHED' | 'QUOTED' | 'BOOKED'
+      createdAt: r.createdAt,
+      aiMatchedVendors: r.aiMatchedVendors,
+    }));
+
+    res.json({ requests: formatted });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getRequestById(req: Request, res: Response, next: NextFunction) {
   try {
     const requestId = String(req.params.requestId);
