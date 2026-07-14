@@ -2,6 +2,7 @@ import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler';
+import authRoutes from './routes/authRoutes';
 
 const app: Application = express();
 
@@ -19,8 +20,8 @@ app.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+app.use('/auth', authRoutes);
 // Routes will be mounted here in later sessions
-// app.use('/auth', authRoutes);
 // app.use('/vendors', vendorRoutes);
 // app.use('/customers', customerRoutes);
 // app.use('/admin', adminRoutes);
