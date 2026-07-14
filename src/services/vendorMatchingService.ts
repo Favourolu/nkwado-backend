@@ -38,6 +38,19 @@ function parsePriceRange(priceRange: string | null): number | null {
   return numeric;
 }
 
+interface PriceableVendor {
+  priceRange: string | null;
+  listings: { basePrice: number }[];
+}
+
+/** Shared with the customize endpoint so a manually-selected vendor gets the same price estimate. */
+export function estimateVendorBasePrice(vendor: PriceableVendor): number | null {
+  const listingPrice = vendor.listings.length
+    ? Math.min(...vendor.listings.map((l) => l.basePrice))
+    : null;
+  return listingPrice ?? parsePriceRange(vendor.priceRange);
+}
+
 /**
  * Rule-based stand-in for the spec's "call Claude API to match vendors" step.
  * Same input/output shape as a real AI matcher, so swapping this out for an
@@ -53,10 +66,7 @@ export async function matchVendorsForRequest(input: MatchInput): Promise<VendorM
 
   const scored = vendors
     .map((vendor) => {
-      const listingPrice = vendor.listings.length
-        ? Math.min(...vendor.listings.map((l) => l.basePrice))
-        : null;
-      const estimatedPrice = listingPrice ?? parsePriceRange(vendor.priceRange);
+      const estimatedPrice = estimateVendorBasePrice(vendor);
 
       if (estimatedPrice === null || estimatedPrice > ceiling) return null;
 
@@ -71,7 +81,6 @@ export async function matchVendorsForRequest(input: MatchInput): Promise<VendorM
         businessName: vendor.businessName,
         basePrice: estimatedPrice,
         locationMatch,
-        hasStructuredPricing: listingPrice !== null,
       };
     })
     .filter((v): v is NonNullable<typeof v> => v !== null);

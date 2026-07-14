@@ -36,3 +36,12 @@ export const questionnaireSchema = Joi.object({
   specialRequirements: Joi.string().trim().optional().allow(''),
   questionnaire: Joi.object().unknown(true).optional(),
 });
+
+export const customizeRequestSchema = Joi.object({
+  selectedVendorIds: Joi.array().items(Joi.string()).min(1).required(),
+  notes: Joi.string().trim().optional().allow(''),
+});
+
+export const createBookingSchema = Joi.object({
+  selectedQuoteIds: Joi.array().items(Joi.string()).min(1).required(),
+});

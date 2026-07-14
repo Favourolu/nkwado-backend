@@ -2,9 +2,17 @@ import { Request, Response, NextFunction } from 'express';
 import { Prisma } from '@prisma/client';
 import prisma from '../utils/prisma';
 import { AppError } from '../middleware/errorHandler';
-import { questionnaireSchema } from '../validation/customerValidation';
-import { matchVendorsForRequest } from '../services/vendorMatchingService';
+import {
+  questionnaireSchema,
+  customizeRequestSchema,
+  createBookingSchema,
+} from '../validation/customerValidation';
+import { matchVendorsForRequest, estimateVendorBasePrice, VendorMatch } from '../services/vendorMatchingService';
 import { sendEmail } from '../services/emailService';
+import { generateBookingBillPdf } from '../services/pdfService';
+import { uploadToS3 } from '../services/s3Service';
+
+const SERVICE_CHARGE_RATE = 0.1;
 
 async function getCustomerOrThrow(userId: string) {
   const customer = await prisma.customer.findUnique({ where: { userId } });
@@ -131,6 +139,188 @@ export async function getRequestQuotes(req: Request, res: Response, next: NextFu
     });
 
     res.json({ quotes: formatted });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function customizeRequest(req: Request, res: Response, next: NextFunction) {
+  try {
+    const requestId = String(req.params.requestId);
+    const { error, value } = customizeRequestSchema.validate(req.body);
+    if (error) {
+      throw new AppError(error.details[0].message, 400);
+    }
+
+    const customer = await getCustomerOrThrow(req.user!.userId);
+    const eventRequest = await getOwnedRequestOrThrow(requestId, customer.id);
+
+    const selectedVendors = await prisma.vendor.findMany({
+      where: { id: { in: value.selectedVendorIds }, status: 'APPROVED' },
+      include: { listings: true },
+    });
+
+    if (selectedVendors.length !== value.selectedVendorIds.length) {
+      throw new AppError('One or more selected vendors are not available', 400);
+    }
+
+    const existingMatches =
+      (eventRequest.aiMatchedVendors as unknown as VendorMatch[] | null) || [];
+
+    const updatedMatches: VendorMatch[] = selectedVendors.map((vendor) => {
+      const existing = existingMatches.find((m) => m.vendorId === vendor.id);
+      if (existing) return existing;
+
+      return {
+        vendorId: vendor.id,
+        category: vendor.category,
+        businessName: vendor.businessName,
+        basePrice: estimateVendorBasePrice(vendor) ?? 0,
+        reason: 'Customer selected',
+      };
+    });
+
+    const updatedRequest = await prisma.eventRequest.update({
+      where: { id: requestId },
+      data: {
+        aiMatchedVendors: updatedMatches as unknown as Prisma.InputJsonValue,
+        customizationNotes: value.notes || undefined,
+      },
+    });
+
+    res.json({
+      request: {
+        ...updatedRequest,
+        aiMatchedVendors: updatedMatches,
+        selectedVendors,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createBooking(req: Request, res: Response, next: NextFunction) {
+  try {
+    const requestId = String(req.params.requestId);
+    const { error, value } = createBookingSchema.validate(req.body);
+    if (error) {
+      throw new AppError(error.details[0].message, 400);
+    }
+
+    const customer = await getCustomerOrThrow(req.user!.userId);
+    const eventRequest = await getOwnedRequestOrThrow(requestId, customer.id);
+
+    const quotes = await prisma.quote.findMany({
+      where: { id: { in: value.selectedQuoteIds }, requestId },
+      include: { vendor: { include: { user: true } } },
+    });
+
+    if (quotes.length !== value.selectedQuoteIds.length) {
+      throw new AppError('One or more selected quotes are invalid for this request', 400);
+    }
+
+    const subtotal = quotes.reduce((sum, q) => sum + q.basePrice, 0);
+    const serviceCharge = Math.round(subtotal * SERVICE_CHARGE_RATE * 100) / 100;
+    const totalAmount = subtotal + serviceCharge;
+    const selectedVendorIds = Array.from(new Set(quotes.map((q) => q.vendorId)));
+
+    const booking = await prisma.booking.create({
+      data: {
+        customerId: customer.id,
+        requestId,
+        selectedQuoteIds: value.selectedQuoteIds,
+        selectedVendorIds,
+        selectedVendors: { connect: selectedVendorIds.map((id) => ({ id })) },
+        subtotal,
+        serviceCharge,
+        totalAmount,
+        status: 'CONFIRMED',
+      },
+    });
+
+    await Promise.all([
+      prisma.quote.updateMany({
+        where: { id: { in: value.selectedQuoteIds } },
+        data: { status: 'ACCEPTED' },
+      }),
+      prisma.eventRequest.update({ where: { id: requestId }, data: { status: 'booked' } }),
+    ]);
+
+    const pdfBuffer = generateBookingBillPdf({
+      bookingId: booking.id,
+      eventType: eventRequest.eventType,
+      eventDate: eventRequest.eventDate,
+      guestCount: eventRequest.guestCount,
+      location: eventRequest.location,
+      vendors: quotes.map((q) => ({
+        businessName: q.vendor.businessName,
+        category: q.vendor.category,
+        basePrice: q.basePrice,
+      })),
+      subtotal,
+      serviceCharge,
+      totalAmount,
+      createdAt: booking.createdAt,
+    });
+
+    const billPdfUrl = await uploadToS3(
+      { buffer: pdfBuffer, originalname: `booking-${booking.id}.pdf`, mimetype: 'application/pdf' },
+      'bills'
+    );
+
+    const finalBooking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: { billPdfUrl, billGeneratedAt: new Date() },
+    });
+
+    const customerUser = await prisma.user.findUnique({ where: { id: req.user!.userId } });
+
+    await Promise.all([
+      customerUser
+        ? sendEmail({
+            to: customerUser.email,
+            subject: 'Your Nkwado booking is confirmed',
+            html: `<p>Your booking (${booking.id}) is confirmed. Total: NGN ${totalAmount.toLocaleString()}.</p>`,
+          })
+        : Promise.resolve(),
+      ...quotes.map((q) =>
+        sendEmail({
+          to: q.vendor.user.email,
+          subject: 'Booking confirmed',
+          html: `<p>Your quote for booking ${booking.id} has been accepted.</p>`,
+        })
+      ),
+    ]);
+
+    res.status(201).json({ booking: finalBooking });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listBookings(req: Request, res: Response, next: NextFunction) {
+  try {
+    const customer = await getCustomerOrThrow(req.user!.userId);
+
+    const bookings = await prisma.booking.findMany({
+      where: { customerId: customer.id },
+      include: { request: true, selectedVendors: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const formatted = bookings.map((booking) => ({
+      id: booking.id,
+      eventType: booking.request.eventType,
+      eventDate: booking.request.eventDate,
+      totalAmount: booking.totalAmount,
+      status: booking.status,
+      selectedVendors: booking.selectedVendors,
+      billPdfUrl: booking.billPdfUrl,
+      createdAt: booking.createdAt,
+    }));
+
+    res.json({ bookings: formatted });
   } catch (err) {
     next(err);
   }

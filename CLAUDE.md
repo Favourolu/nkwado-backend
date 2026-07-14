@@ -13,8 +13,9 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
 - [x] Session 4 — Customer routes: `POST /customers/questionnaire`, `GET /customers/requests/:requestId`,
       `GET /customers/requests/:requestId/quotes`. Vendor matching is a **rule-based stub**, not
       the real Claude API (user opted to defer providing an API key — see note 7 below)
-- [ ] Session 5 — Customization + booking (PDF bill generation) — **next up**
-- [ ] Session 6 — Progress tracking + deadline reminders (node-cron)
+- [x] Session 5 — `POST /customers/customize/:requestId`, `POST /customers/booking/:requestId`
+      (PDF bill generation via jsPDF, uploaded through the existing S3 service), `GET /customers/bookings`
+- [ ] Session 6 — Progress tracking + deadline reminders (node-cron) — **next up**
 - [ ] Session 7 — Admin vendor vetting routes
 - [ ] Session 8 — Admin dashboard routes
 - [ ] Sessions 9–16 — Frontend (separate Next.js repo, not started)
@@ -70,6 +71,20 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
    **To wire in the real Claude API later:** replace the body of `matchVendorsForRequest` with
    an Anthropic API call, keep it returning `VendorMatch[]`, and set `ANTHROPIC_API_KEY` in
    `.env` (not committed, not pasted in chat — set directly in the environment).
+
+8. **`EventRequest.customizationNotes String?` added to schema** (Session 5, not in the spec's
+   original model) to hold the free-text `notes` field from `POST /customers/customize/:requestId`
+   — the spec's request body includes `notes` but the original `EventRequest` model had nowhere
+   to store it. `POST /customers/customize/:requestId` also reuses `aiMatchedVendors` (rather than
+   adding a separate `selectedVendorIds` column) by filtering/extending that JSON array to the
+   customer's final vendor picks; any vendor added during customization that wasn't in the original
+   AI match gets priced via the same `estimateVendorBasePrice()` helper the matching stub uses
+   (exported from `vendorMatchingService.ts` for reuse), tagged with reason `"Customer selected"`.
+
+9. **Booking bill PDFs generated with `jsPDF` in Node (no `canvas` dependency needed)** — confirmed
+   working for the spec's text-only bill layout (booking ID, event details, vendor list, price
+   breakdown). Uploaded through the same S3 service/`FILE_STORAGE_DRIVER` fallback as vendor docs
+   (note 4), under an S3 `bills/` prefix.
 
 ## Local dev setup (already done in this container, redo if it's fresh)
 
