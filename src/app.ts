@@ -3,6 +3,8 @@ import cors from 'cors';
 import morgan from 'morgan';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler';
 import authRoutes from './routes/authRoutes';
+import vendorRoutes from './routes/vendorRoutes';
+import customerRoutes from './routes/customerRoutes';
 
 const app: Application = express();
 
@@ -21,9 +23,9 @@ app.get('/health', (req: Request, res: Response) => {
 });
 
 app.use('/auth', authRoutes);
+app.use('/vendors', vendorRoutes);
+app.use('/customers', customerRoutes);
 // Routes will be mounted here in later sessions
-// app.use('/vendors', vendorRoutes);
-// app.use('/customers', customerRoutes);
 // app.use('/admin', adminRoutes);
 
 app.use(notFoundHandler);

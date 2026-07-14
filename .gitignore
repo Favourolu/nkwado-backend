@@ -1,3 +1,6 @@
+# Local dev file upload fallback (see src/services/s3Service.ts)
+/uploads
+
 # Logs
 logs
 *.log

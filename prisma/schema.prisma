@@ -177,6 +177,9 @@ model EventRequest {
   aiMatchedVendors Json? // [{vendorId, category, reason}]
   status           String   @default("pending") // pending, matched, quoted, booked
 
+  // Customer customization (POST /customers/customize/:requestId)
+  customizationNotes String?
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   expiresAt DateTime? // 24h from creation
@@ -217,6 +220,7 @@ model Quote {
   submittedAt  DateTime? // When vendor responded
   deadlineAt   DateTime // 24h from sentAt
   respondedAt  DateTime? // When vendor submitted
+  reminderSentAt DateTime? // Set once the approaching-deadline reminder email has gone out
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
