@@ -12,6 +12,7 @@ import { sendEmail } from '../services/emailService';
 import { vendorInquiryEmail, bookingConfirmedCustomerEmail, bookingConfirmedVendorEmail } from '../services/emailTemplates';
 import { generateBookingBillPdf } from '../services/pdfService';
 import { uploadToS3 } from '../services/s3Service';
+import { createQuoteInvitations } from '../services/quoteInvitationService';
 
 const SERVICE_CHARGE_RATE = 0.1;
 
@@ -72,6 +73,8 @@ export async function submitQuestionnaire(req: Request, res: Response, next: Nex
     });
 
     if (matches.length > 0) {
+      await createQuoteInvitations(eventRequest.id, matches.map((m) => m.vendorId));
+
       const matchedVendors = await prisma.vendor.findMany({
         where: { id: { in: matches.map((m) => m.vendorId) } },
         include: { user: true },
@@ -178,6 +181,8 @@ export async function customizeRequest(req: Request, res: Response, next: NextFu
       };
     });
 
+    await createQuoteInvitations(requestId, selectedVendors.map((v) => v.id));
+
     const updatedRequest = await prisma.eventRequest.update({
       where: { id: requestId },
       data: {
@@ -210,18 +215,26 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
     const eventRequest = await getOwnedRequestOrThrow(requestId, customer.id);
 
     const quotes = await prisma.quote.findMany({
-      where: { id: { in: value.selectedQuoteIds }, requestId },
+      where: { id: { in: value.selectedQuoteIds }, requestId, status: 'SUBMITTED' },
       include: { vendor: { include: { user: true } } },
     });
 
     if (quotes.length !== value.selectedQuoteIds.length) {
-      throw new AppError('One or more selected quotes are invalid for this request', 400);
+      throw new AppError('One or more selected quotes are invalid or not yet submitted for this request', 400);
     }
 
-    const subtotal = quotes.reduce((sum, q) => sum + q.basePrice, 0);
+    // status: 'SUBMITTED' guarantees basePrice was set when the vendor responded.
+    const pricedQuotes = quotes.map((q) => {
+      if (q.basePrice === null) {
+        throw new AppError(`Quote ${q.id} is missing a price`, 500);
+      }
+      return { ...q, basePrice: q.basePrice };
+    });
+
+    const subtotal = pricedQuotes.reduce((sum, q) => sum + q.basePrice, 0);
     const serviceCharge = Math.round(subtotal * SERVICE_CHARGE_RATE * 100) / 100;
     const totalAmount = subtotal + serviceCharge;
-    const selectedVendorIds = Array.from(new Set(quotes.map((q) => q.vendorId)));
+    const selectedVendorIds = Array.from(new Set(pricedQuotes.map((q) => q.vendorId)));
 
     const booking = await prisma.booking.create({
       data: {
@@ -251,7 +264,7 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
       eventDate: eventRequest.eventDate,
       guestCount: eventRequest.guestCount,
       location: eventRequest.location,
-      vendors: quotes.map((q) => ({
+      vendors: pricedQuotes.map((q) => ({
         businessName: q.vendor.businessName,
         category: q.vendor.category,
         basePrice: q.basePrice,
@@ -293,7 +306,7 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
             }),
           })
         : Promise.resolve(),
-      ...quotes.map((q) => sendEmail({ to: q.vendor.user.email, ...vendorBookingEmail })),
+      ...pricedQuotes.map((q) => sendEmail({ to: q.vendor.user.email, ...vendorBookingEmail })),
     ]);
 
     res.status(201).json({ booking: finalBooking });

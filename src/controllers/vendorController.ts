@@ -117,29 +117,24 @@ export async function getVendorInquiries(req: Request, res: Response, next: Next
       throw new AppError('Vendor profile not found', 404);
     }
 
-    const candidateRequests = await prisma.eventRequest.findMany({
-      where: { status: { in: ['matched', 'quoted'] } },
-      include: { customer: { include: { user: true } } },
-      orderBy: { createdAt: 'desc' },
+    const pendingInvitations = await prisma.quote.findMany({
+      where: { vendorId: vendor.id, status: 'PENDING' },
+      include: { request: true },
+      orderBy: { sentAt: 'asc' },
     });
 
-    const inquiries = candidateRequests
-      .filter((request) => {
-        const matched = (request.aiMatchedVendors as Array<{ vendorId: string }> | null) || [];
-        return matched.some((m) => m.vendorId === vendor.id);
-      })
-      .map((request) => ({
-        requestId: request.id,
-        customerId: request.customerId,
-        eventType: request.eventType,
-        eventDate: request.eventDate,
-        guestCount: request.guestCount,
-        budgetRange: request.budgetRange,
-        specialRequirements: request.specialRequirements,
-        questionnaire: request.questionnaire,
-        createdAt: request.createdAt,
-        deadlineAt: request.expiresAt,
-      }));
+    const inquiries = pendingInvitations.map((invitation) => ({
+      requestId: invitation.request.id,
+      customerId: invitation.request.customerId,
+      eventType: invitation.request.eventType,
+      eventDate: invitation.request.eventDate,
+      guestCount: invitation.request.guestCount,
+      budgetRange: invitation.request.budgetRange,
+      specialRequirements: invitation.request.specialRequirements,
+      questionnaire: invitation.request.questionnaire,
+      createdAt: invitation.request.createdAt,
+      deadlineAt: invitation.deadlineAt,
+    }));
 
     res.json({ inquiries });
   } catch (err) {
@@ -169,21 +164,27 @@ export async function submitQuote(req: Request, res: Response, next: NextFunctio
       throw new AppError('Event request not found', 404);
     }
 
-    const sentAt = new Date();
-    const deadlineAt = new Date(sentAt.getTime() + 24 * 60 * 60 * 1000);
+    const invitation = await prisma.quote.findUnique({
+      where: { requestId_vendorId: { requestId, vendorId: vendor.id } },
+    });
+    if (!invitation) {
+      throw new AppError('No invitation found for this vendor on this request', 404);
+    }
+    if (invitation.status === 'EXPIRED') {
+      throw new AppError('This inquiry has expired', 400);
+    }
 
-    const quote = await prisma.quote.create({
+    const submittedAt = new Date();
+
+    const quote = await prisma.quote.update({
+      where: { id: invitation.id },
       data: {
-        requestId,
-        vendorId: vendor.id,
         basePrice: value.basePrice,
         itemization: value.itemization || undefined,
         notes: value.notes || undefined,
         status: 'SUBMITTED',
-        sentAt,
-        submittedAt: sentAt,
-        respondedAt: sentAt,
-        deadlineAt,
+        submittedAt,
+        respondedAt: submittedAt,
       },
     });
 
