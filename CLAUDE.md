@@ -10,8 +10,10 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
 - [x] Session 2 — `POST /auth/register`, `POST /auth/login`, `authenticate`/`requireRole` middleware
 - [x] Session 3 — Vendor routes: `POST /vendors/onboard`, `GET /vendors/profile`,
       `GET /vendors/inquiries`, `POST /vendors/quotes/:requestId`
-- [ ] Session 4 — Customer routes (questionnaire + AI vendor matching via Claude API) — **next up**
-- [ ] Session 5 — Customization + booking (PDF bill generation)
+- [x] Session 4 — Customer routes: `POST /customers/questionnaire`, `GET /customers/requests/:requestId`,
+      `GET /customers/requests/:requestId/quotes`. Vendor matching is a **rule-based stub**, not
+      the real Claude API (user opted to defer providing an API key — see note 7 below)
+- [ ] Session 5 — Customization + booking (PDF bill generation) — **next up**
 - [ ] Session 6 — Progress tracking + deadline reminders (node-cron)
 - [ ] Session 7 — Admin vendor vetting routes
 - [ ] Session 8 — Admin dashboard routes
@@ -53,6 +55,22 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
    records are *not* auto-created — they're created at `POST /vendors/onboard` (Session 3),
    matching the spec's "create/update vendor record" language.
 
+7. **Vendor matching (Session 4) is a rule-based stub, not the real Claude API.** User was
+   asked for an `ANTHROPIC_API_KEY` and chose not to paste it into chat (correctly — chat isn't
+   a secrets channel) and to defer; deterministic placeholder went in instead so Session 4
+   wasn't blocked. See `src/services/vendorMatchingService.ts` — `matchVendorsForRequest()` has
+   the same input/output shape a real API-backed matcher would need, so swapping the
+   implementation later shouldn't require touching any caller (`customerController.ts`).
+   Algorithm: only considers `APPROVED` vendors; prices come from `VendorListing.basePrice` if
+   the vendor has listings, else parsed out of the free-text `Vendor.priceRange` string (e.g.
+   "₦50k-200k" → 50000) — **there's currently no route that creates `VendorListing` rows**, so
+   in practice almost all matching will fall back to the `priceRange` parse. Filters to vendors
+   at or under the request's `budgetRange` ceiling, picks one vendor per category (preferring a
+   location substring match, then lowest price), returns up to 5.
+   **To wire in the real Claude API later:** replace the body of `matchVendorsForRequest` with
+   an Anthropic API call, keep it returning `VendorMatch[]`, and set `ANTHROPIC_API_KEY` in
+   `.env` (not committed, not pasted in chat — set directly in the environment).
+
 ## Local dev setup (already done in this container, redo if it's fresh)
 
 ```
@@ -67,13 +85,6 @@ npm run dev
 
 Use `Bash` with `run_in_background: true` for `npm run dev`, not shell `&` — backgrounded
 processes started with `&` get reaped between tool calls in this sandbox and silently die.
-
-## Open question for the user
-
-Session 4 needs AI vendor matching via the Claude API (per spec: "Call Claude API to match
-vendors"). Asked whether the user has an Anthropic API key to wire in, or wants a stubbed/
-deterministic matching placeholder until one is provided — **awaiting answer before starting
-Session 4**.
 
 ## Minor oddity, no action taken
 
