@@ -1,0 +1,306 @@
+// prisma/schema.prisma
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ============= USER & AUTH =============
+
+enum UserRole {
+  CUSTOMER
+  VENDOR
+  ADMIN
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String // bcrypted
+  firstName String
+  lastName  String
+  phone     String?
+  role      UserRole @default(CUSTOMER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  customer       Customer?
+  vendor         Vendor?
+  adminActivity  AdminActivity[]
+
+  @@index([email])
+}
+
+// ============= CUSTOMER =============
+
+model Customer {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  location  String? // City/area
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  requests EventRequest[]
+  bookings Booking[]
+
+  @@index([userId])
+}
+
+// ============= VENDOR & VETTING =============
+
+enum VendorStatus {
+  PENDING // Waiting for vetting
+  APPROVED // Approved by admin
+  REJECTED // Rejected by admin
+}
+
+enum VendorCategory {
+  CATERING
+  VENUE
+  DJ
+  LIVE_BAND
+  DRESSES
+  SUITS
+  DECORATION
+  PHOTOGRAPHY
+  VIDEOGRAPHY
+  TRANSPORTATION
+  FLORIST
+  PLANNER
+}
+
+model Vendor {
+  id           String         @id @default(cuid())
+  userId       String         @unique
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Business info
+  businessName String
+  businessType String?
+  category     VendorCategory
+  description  String?
+  location     String?
+  phoneNumber  String?
+
+  // Vetting
+  status               VendorStatus @default(PENDING)
+  cacDocument          String? // S3 URL
+  supportingDocuments  String[] // S3 URLs
+  profilePhotos        String[] // S3 URLs
+  verifiedAt           DateTime?
+  rejectionReason      String?
+
+  // Pricing & Services
+  priceRange String? // e.g., "₦50k-200k per event"
+  services   String[] // e.g., ["Full catering", "Bar service"]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  listings VendorListing[]
+  quotes   Quote[]
+  bookings Booking[] @relation("BookingSelectedVendors")
+  reviews  Review[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([category])
+}
+
+model VendorListing {
+  id           String         @id @default(cuid())
+  vendorId     String
+  vendor       Vendor         @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  title        String
+  description  String?
+  category     VendorCategory
+  basePrice    Float // Starting price
+  priceUnit    String? // "per person", "per hour", "per event"
+  availability String? // JSON or free text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([vendorId])
+  @@index([category])
+}
+
+// ============= EVENT REQUEST & MATCHING =============
+
+enum EventType {
+  BIRTHDAY
+  WEDDING
+  ANNIVERSARY
+  CORPORATE
+  GRADUATION
+  ENGAGEMENT
+  BABY_SHOWER
+  CONCERT
+  CONFERENCE
+  OTHER
+}
+
+enum BudgetRange {
+  ZERO_TO_500K // ₦0-500k
+  FROM_500K_TO_1M @map("_500K_TO_1M") // ₦500k-1m
+  FROM_1M_TO_3M @map("_1M_TO_3M") // ₦1m-3m
+  FROM_3M_TO_5M @map("_3M_TO_5M") // ₦3m-5m
+  ABOVE_5M // ₦5m+
+}
+
+model EventRequest {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  // Event details
+  eventType           EventType
+  eventDate            DateTime?
+  guestCount           Int?
+  location             String?
+  budgetRange          BudgetRange
+  specialRequirements  String? // Text description
+
+  // Questionnaire responses (JSON for flexibility)
+  questionnaire Json? // Stores all Q&A pairs
+
+  // AI Matching
+  aiMatchedVendors Json? // [{vendorId, category, reason}]
+  status           String   @default("pending") // pending, matched, quoted, booked
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  expiresAt DateTime? // 24h from creation
+
+  // Relations
+  quotes   Quote[]
+  bookings Booking[]
+
+  @@index([customerId])
+  @@index([status])
+}
+
+// ============= QUOTES & QUOTING FLOW =============
+
+enum QuoteStatus {
+  PENDING // Waiting for vendor response
+  SUBMITTED // Vendor has responded
+  ACCEPTED // Customer accepted
+  REJECTED // Customer rejected
+  EXPIRED // 24h timeout
+}
+
+model Quote {
+  id        String       @id @default(cuid())
+  requestId String
+  request   EventRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  vendorId  String
+  vendor    Vendor       @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  // Quote details
+  basePrice    Float // Vendor's quoted price (gross)
+  itemization  Json? // [{item, qty, unitPrice, total}]
+  notes        String? // Vendor notes
+  status       QuoteStatus @default(PENDING)
+
+  // Timeline
+  sentAt       DateTime  @default(now())
+  submittedAt  DateTime? // When vendor responded
+  deadlineAt   DateTime // 24h from sentAt
+  respondedAt  DateTime? // When vendor submitted
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([requestId])
+  @@index([vendorId])
+  @@index([status])
+}
+
+// ============= BOOKING & FINALIZATION =============
+
+enum BookingStatus {
+  PENDING // Quotes received, awaiting customer decision
+  CONFIRMED // Customer selected vendors, bill generated
+  PAID // Payment processed via Parthian
+  COMPLETED // Event completed
+  CANCELLED // Booking cancelled
+}
+
+model Booking {
+  id         String       @id @default(cuid())
+  customerId String
+  customer   Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  requestId  String
+  request    EventRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  // Selected vendors
+  selectedQuoteIds  String[] // Array of Quote IDs customer selected
+  selectedVendorIds String[] // Array of Vendor IDs
+  selectedVendors   Vendor[] @relation("BookingSelectedVendors")
+
+  // Pricing
+  subtotal      Float // Sum of all vendor quotes
+  serviceCharge Float // 10% of subtotal
+  totalAmount   Float // subtotal + serviceCharge
+
+  // Bill
+  billPdfUrl      String? // S3 URL to generated PDF
+  billGeneratedAt DateTime?
+
+  // Payment
+  status         BookingStatus @default(PENDING)
+  paymentStatus  String? // "pending", "processing", "completed", "failed"
+  paymentId      String? // Reference to Parthian payment
+
+  // Tracking
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([requestId])
+  @@index([status])
+}
+
+// ============= REVIEWS & RATINGS =============
+
+model Review {
+  id         String   @id @default(cuid())
+  vendorId   String
+  vendor     Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  customerId String // Not a FK to allow anonymous reviews later
+
+  rating  Int // 1-5
+  comment String?
+
+  createdAt DateTime @default(now())
+
+  @@index([vendorId])
+}
+
+// ============= ADMIN ACTIVITY LOG =============
+
+model AdminActivity {
+  id      String @id @default(cuid())
+  adminId String
+  admin   User   @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  action     String // "vendor_approved", "vendor_rejected", etc.
+  targetType String // "vendor", "booking", "quote"
+  targetId   String
+  details    Json? // Additional context
+
+  createdAt DateTime @default(now())
+
+  @@index([adminId])
+  @@index([action])
+}
