@@ -1,3 +1,4 @@
+import { VendorCategory } from '@prisma/client';
 import prisma from '../utils/prisma';
 
 export interface VendorMatch {
@@ -12,6 +13,9 @@ interface MatchInput {
   budgetRange: string;
   guestCount: number | null;
   location: string | null;
+  /** Vendor categories the customer actually wants matched. Empty/omitted matches every
+   *  available category (previous behavior), capped at MAX_MATCHES. */
+  categories?: string[];
 }
 
 const BUDGET_CEILING: Record<string, number> = {
@@ -58,9 +62,13 @@ export function estimateVendorBasePrice(vendor: PriceableVendor): number | null 
  */
 export async function matchVendorsForRequest(input: MatchInput): Promise<VendorMatch[]> {
   const ceiling = BUDGET_CEILING[input.budgetRange] ?? Infinity;
+  const categories = input.categories?.length ? (input.categories as VendorCategory[]) : null;
 
   const vendors = await prisma.vendor.findMany({
-    where: { status: 'APPROVED' },
+    where: {
+      status: 'APPROVED',
+      ...(categories ? { category: { in: categories } } : {}),
+    },
     include: { listings: true },
   });
 
@@ -100,9 +108,13 @@ export async function matchVendorsForRequest(input: MatchInput): Promise<VendorM
     if (candidateBetter) byCategory.set(candidate.category, candidate);
   }
 
+  // When the customer explicitly picked categories, try to return one match per category
+  // instead of capping at MAX_MATCHES (that cap only exists to keep open-ended matching sane).
+  const resultLimit = categories ? categories.length : MAX_MATCHES;
+
   return Array.from(byCategory.values())
     .sort((a, b) => (a.locationMatch === b.locationMatch ? a.basePrice - b.basePrice : a.locationMatch ? -1 : 1))
-    .slice(0, MAX_MATCHES)
+    .slice(0, resultLimit)
     .map((v) => ({
       vendorId: v.vendorId,
       category: v.category,

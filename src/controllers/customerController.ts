@@ -51,6 +51,7 @@ export async function submitQuestionnaire(req: Request, res: Response, next: Nex
         budgetRange: value.budgetRange,
         specialRequirements: value.specialRequirements || undefined,
         questionnaire: value.questionnaire || undefined,
+        interestedCategories: value.interestedCategories,
         status: 'pending',
       },
     });
@@ -59,6 +60,7 @@ export async function submitQuestionnaire(req: Request, res: Response, next: Nex
       budgetRange: value.budgetRange,
       guestCount: value.guestCount || null,
       location: value.location || null,
+      categories: value.interestedCategories,
     });
 
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
