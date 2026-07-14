@@ -100,6 +100,19 @@ export function reminderCustomerEmail(input: { eventType: string; deadlineAt: Da
   };
 }
 
+/** Sent to the customer ~24h before a still-unbooked SUBMITTED quote auto-expires. */
+export function submittedQuoteExpiringEmail(input: { businessName: string; eventType: string; expiresAt: Date }): EmailContent {
+  return {
+    subject: `Quote from ${input.businessName} is expiring soon`,
+    html: baseLayout(
+      `Your quote from ${input.businessName} expires soon`,
+      `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">A quote is about to expire</h2>
+       <p><strong>${input.businessName}</strong> sent you a quote for your ${input.eventType.toLowerCase()} event that you haven't booked yet.</p>
+       <p>It expires on <strong>${input.expiresAt.toUTCString()}</strong> — log in to your Nkwado dashboard to accept it before then.</p>`
+    ),
+  };
+}
+
 /** Sent to the customer once a booking is confirmed, with the bill summary and a link to the PDF. */
 export function bookingConfirmedCustomerEmail(input: {
   bookingId: string;

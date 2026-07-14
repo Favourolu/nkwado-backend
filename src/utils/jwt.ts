@@ -7,6 +7,10 @@ export interface JwtPayload {
   userId: string;
   email: string;
   role: string;
+  // Must match the signing-time value of User.tokenVersion; bumping that column (logout-all)
+  // invalidates every token issued before the bump, since verifyToken alone can't revoke
+  // a signature-valid, non-expired JWT.
+  tokenVersion: number;
 }
 
 export function signToken(payload: JwtPayload): string {

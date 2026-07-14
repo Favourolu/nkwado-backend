@@ -11,7 +11,7 @@ import { matchVendorsForRequest, estimateVendorBasePrice, VendorMatch } from '..
 import { sendEmail } from '../services/emailService';
 import { vendorInquiryEmail, bookingConfirmedCustomerEmail, bookingConfirmedVendorEmail } from '../services/emailTemplates';
 import { generateBookingBillPdf } from '../services/pdfService';
-import { uploadToS3 } from '../services/s3Service';
+import { uploadToS3, getSignedDownloadUrl } from '../services/s3Service';
 import { createQuoteInvitations } from '../services/quoteInvitationService';
 
 const SERVICE_CHARGE_RATE = 0.1;
@@ -52,7 +52,7 @@ export async function submitQuestionnaire(req: Request, res: Response, next: Nex
         specialRequirements: value.specialRequirements || undefined,
         questionnaire: value.questionnaire || undefined,
         interestedCategories: value.interestedCategories,
-        status: 'pending',
+        status: 'PENDING',
       },
     });
 
@@ -69,7 +69,7 @@ export async function submitQuestionnaire(req: Request, res: Response, next: Nex
       where: { id: eventRequest.id },
       data: {
         aiMatchedVendors: matches as unknown as Prisma.InputJsonValue,
-        status: matches.length > 0 ? 'matched' : 'pending',
+        status: matches.length > 0 ? 'MATCHED' : 'PENDING',
         expiresAt,
       },
     });
@@ -217,12 +217,12 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
     const eventRequest = await getOwnedRequestOrThrow(requestId, customer.id);
 
     const quotes = await prisma.quote.findMany({
-      where: { id: { in: value.selectedQuoteIds }, requestId, status: 'SUBMITTED' },
+      where: { id: { in: value.selectedQuoteIds }, requestId, status: 'SUBMITTED', bookingId: null },
       include: { vendor: { include: { user: true } } },
     });
 
     if (quotes.length !== value.selectedQuoteIds.length) {
-      throw new AppError('One or more selected quotes are invalid or not yet submitted for this request', 400);
+      throw new AppError('One or more selected quotes are invalid, not yet submitted, or already booked', 400);
     }
 
     // status: 'SUBMITTED' guarantees basePrice was set when the vendor responded.
@@ -238,27 +238,40 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
     const totalAmount = subtotal + serviceCharge;
     const selectedVendorIds = Array.from(new Set(pricedQuotes.map((q) => q.vendorId)));
 
-    const booking = await prisma.booking.create({
-      data: {
-        customerId: customer.id,
-        requestId,
-        selectedQuoteIds: value.selectedQuoteIds,
-        selectedVendorIds,
-        selectedVendors: { connect: selectedVendorIds.map((id) => ({ id })) },
-        subtotal,
-        serviceCharge,
-        totalAmount,
-        status: 'CONFIRMED',
-      },
-    });
+    // Everything below runs in one transaction so the quote-accept step is atomic with
+    // booking creation: the conditional updateMany only flips rows that are still
+    // SUBMITTED and unbooked, and if a concurrent request already grabbed one of them
+    // (or the deadline cron expired it mid-flight), the count check throws and the whole
+    // transaction rolls back instead of silently double-booking a vendor.
+    const booking = await prisma.$transaction(async (tx) => {
+      const createdBooking = await tx.booking.create({
+        data: {
+          customerId: customer.id,
+          requestId,
+          selectedVendors: { connect: selectedVendorIds.map((id) => ({ id })) },
+          subtotal,
+          serviceCharge,
+          totalAmount,
+          status: 'CONFIRMED',
+        },
+      });
 
-    await Promise.all([
-      prisma.quote.updateMany({
-        where: { id: { in: value.selectedQuoteIds } },
-        data: { status: 'ACCEPTED' },
-      }),
-      prisma.eventRequest.update({ where: { id: requestId }, data: { status: 'booked' } }),
-    ]);
+      const accepted = await tx.quote.updateMany({
+        where: { id: { in: value.selectedQuoteIds }, status: 'SUBMITTED', bookingId: null },
+        data: { status: 'ACCEPTED', bookingId: createdBooking.id, version: { increment: 1 } },
+      });
+
+      if (accepted.count !== value.selectedQuoteIds.length) {
+        throw new AppError(
+          'One or more selected quotes were booked or expired by another request — please refresh and try again',
+          409
+        );
+      }
+
+      await tx.eventRequest.update({ where: { id: requestId }, data: { status: 'BOOKED' } });
+
+      return createdBooking;
+    });
 
     const pdfBuffer = generateBookingBillPdf({
       bookingId: booking.id,
@@ -277,16 +290,33 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
       createdAt: booking.createdAt,
     });
 
-    const billPdfUrl = await uploadToS3(
+    const billPdfKey = await uploadToS3(
       { buffer: pdfBuffer, originalname: `booking-${booking.id}.pdf`, mimetype: 'application/pdf' },
       'bills'
     );
 
-    const finalBooking = await prisma.booking.update({
-      where: { id: booking.id },
-      data: { billPdfUrl, billGeneratedAt: new Date() },
-    });
+    // billPdfKey now lives in S3 whether or not the following DB write succeeds. A few
+    // retries here narrows (doesn't eliminate) the orphaned-PDF window from the audit —
+    // a transient DB blip no longer means the link is lost after one attempt.
+    let finalBooking = null;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= 3 && !finalBooking; attempt++) {
+      try {
+        finalBooking = await prisma.booking.update({
+          where: { id: booking.id },
+          data: { billPdfUrl: billPdfKey, billGeneratedAt: new Date() },
+        });
+      } catch (err) {
+        lastErr = err;
+        if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 500));
+      }
+    }
+    if (!finalBooking) {
+      console.error(`[createBooking] failed to persist billPdfUrl for booking ${booking.id} after retries:`, lastErr);
+      throw new AppError('Booking was created but the bill could not be saved — contact support', 500);
+    }
 
+    const billPdfUrl = await getSignedDownloadUrl(billPdfKey);
     const customerUser = await prisma.user.findUnique({ where: { id: req.user!.userId } });
 
     const vendorBookingEmail = bookingConfirmedVendorEmail({
@@ -304,14 +334,14 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
               subtotal,
               serviceCharge,
               totalAmount,
-              billPdfUrl,
+              billPdfUrl: billPdfUrl || '',
             }),
           })
         : Promise.resolve(),
       ...pricedQuotes.map((q) => sendEmail({ to: q.vendor.user.email, ...vendorBookingEmail })),
     ]);
 
-    res.status(201).json({ booking: finalBooking });
+    res.status(201).json({ booking: { ...finalBooking, billPdfUrl } });
   } catch (err) {
     next(err);
   }
@@ -327,16 +357,18 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
       orderBy: { createdAt: 'desc' },
     });
 
-    const formatted = bookings.map((booking) => ({
-      id: booking.id,
-      eventType: booking.request.eventType,
-      eventDate: booking.request.eventDate,
-      totalAmount: booking.totalAmount,
-      status: booking.status,
-      selectedVendors: booking.selectedVendors,
-      billPdfUrl: booking.billPdfUrl,
-      createdAt: booking.createdAt,
-    }));
+    const formatted = await Promise.all(
+      bookings.map(async (booking) => ({
+        id: booking.id,
+        eventType: booking.request.eventType,
+        eventDate: booking.request.eventDate,
+        totalAmount: booking.totalAmount,
+        status: booking.status,
+        selectedVendors: booking.selectedVendors,
+        billPdfUrl: await getSignedDownloadUrl(booking.billPdfUrl),
+        createdAt: booking.createdAt,
+      }))
+    );
 
     res.json({ bookings: formatted });
   } catch (err) {

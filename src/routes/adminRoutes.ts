@@ -8,6 +8,8 @@ import {
   listBookings,
   getDashboardMetrics,
   getActivityLog,
+  getCronHealth,
+  getEmailFailures,
 } from '../controllers/adminController';
 
 const router = Router();
@@ -21,5 +23,7 @@ router.get('/requests', listRequests);
 router.get('/bookings', listBookings);
 router.get('/dashboard', getDashboardMetrics);
 router.get('/activity', getActivityLog);
+router.get('/health/cron', getCronHealth);
+router.get('/email-failures', getEmailFailures);
 
 export default router;

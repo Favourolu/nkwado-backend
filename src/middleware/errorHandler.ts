@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import multer from 'multer';
 
 export class AppError extends Error {
   statusCode: number;
@@ -20,7 +21,10 @@ export function errorHandler(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   next: NextFunction
 ) {
-  const statusCode = err instanceof AppError ? err.statusCode : 500;
+  // multer surfaces both size-limit violations and our fileFilter rejection as plain
+  // Errors passed to next() - treat both as client errors, not server errors.
+  const isUploadRejection = err instanceof multer.MulterError || /Only PDF, JPEG, or PNG/.test(err.message || '');
+  const statusCode = err instanceof AppError ? err.statusCode : isUploadRejection ? 400 : 500;
   const message = err.message || 'Internal server error';
 
   if (statusCode >= 500) {
