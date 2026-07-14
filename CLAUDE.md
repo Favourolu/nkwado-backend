@@ -23,8 +23,12 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
 - [x] Session 7 — `GET /admin/vendors/pending`, `POST /admin/vendors/:vendorId/approve`,
       `POST /admin/vendors/:vendorId/reject`. Logs to `AdminActivity`, emails the vendor either way.
       **ADMIN accounts aren't self-registerable** — see note 12 below for how to create one.
-- [ ] Session 8 — Admin dashboard routes — **next up**
-- [ ] Sessions 9–16 — Frontend (separate Next.js repo, not started)
+- [x] Session 8 — `GET /admin/requests` (filterable by `status`/`eventType`, includes quote count +
+      booking status), `GET /admin/bookings` (filterable by `status`/`startDate`), `GET /admin/dashboard`
+      (KPI metrics), `GET /admin/activity` (audit log, most recent 100). **Phase 1–3 backend now
+      complete** — all 8 backend sessions of the plan are done.
+- [ ] Session 9 — Frontend: Next.js project setup + auth pages — **next up** (separate repo, not started)
+- [ ] Sessions 10–16 — Remaining frontend (customer/vendor/admin dashboards, progress tracker)
 - [ ] Session 17 — Email templates (base Resend integration already in from Session 3)
 - [ ] Session 18 — Deployment (Railway/Render + Vercel)
 
@@ -113,6 +117,14 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
     way to be reached otherwise. Run `npm run prisma:seed` after setting those two vars in `.env`;
     no-ops if either is unset or the account already exists. Not part of the original spec, but
     necessary plumbing — there's no other route or script in the plan that creates an ADMIN user.
+
+13. **`GET /admin/dashboard`'s `totalRevenue`/`averageEventValue`** (Session 8) are computed over
+    `Booking.totalAmount` (the gross event bill, not just Nkwado's 10% service-charge cut) for
+    bookings in `CONFIRMED`/`PAID`/`COMPLETED` — the spec's example numbers only make sense at
+    that scale, and it isn't explicit about which. `activeRequests` counts `EventRequest.status`
+    in `pending`/`matched`/`quoted` (excludes `booked`, since those have moved on to a `Booking`).
+    `GET /admin/activity` isn't detailed in the spec beyond "return admin activity log" — returns
+    the most recent 100 `AdminActivity` rows with the acting admin's name/email joined in.
 
 ## Local dev setup (already done in this container, redo if it's fresh)
 
