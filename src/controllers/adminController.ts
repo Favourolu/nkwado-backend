@@ -8,6 +8,7 @@ import {
   listBookingsQuerySchema,
 } from '../validation/adminValidation';
 import { sendEmail } from '../services/emailService';
+import { vendorApprovedEmail, vendorRejectedEmail } from '../services/emailTemplates';
 import { logAdminActivity } from '../services/adminActivityService';
 
 const REVENUE_COUNTED_STATUSES: BookingStatus[] = ['CONFIRMED', 'PAID', 'COMPLETED'];
@@ -48,8 +49,7 @@ export async function approveVendor(req: Request, res: Response, next: NextFunct
 
     await sendEmail({
       to: vendor.user.email,
-      subject: 'Your Nkwado vendor application has been approved',
-      html: `<p>Congratulations! ${vendor.businessName} is now an approved vendor on Nkwado.</p>`,
+      ...vendorApprovedEmail({ businessName: vendor.businessName }),
     });
 
     await logAdminActivity({
@@ -82,8 +82,7 @@ export async function rejectVendor(req: Request, res: Response, next: NextFuncti
 
     await sendEmail({
       to: vendor.user.email,
-      subject: 'Update on your Nkwado vendor application',
-      html: `<p>Your application for ${vendor.businessName} was not approved. Reason: ${value.rejectionReason}</p>`,
+      ...vendorRejectedEmail({ businessName: vendor.businessName, rejectionReason: value.rejectionReason }),
     });
 
     await logAdminActivity({

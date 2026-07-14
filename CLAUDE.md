@@ -27,10 +27,19 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
       booking status), `GET /admin/bookings` (filterable by `status`/`startDate`), `GET /admin/dashboard`
       (KPI metrics), `GET /admin/activity` (audit log, most recent 100). **Phase 1–3 backend now
       complete** — all 8 backend sessions of the plan are done.
-- [ ] Session 9 — Frontend: Next.js project setup + auth pages — **next up** (separate repo, not started)
+- [ ] Session 9 — Frontend: Next.js project setup + auth pages (separate repo — kickoff prompt with
+      full API reference and enum gotchas was handed off to a new chat, not tracked in this repo)
 - [ ] Sessions 10–16 — Remaining frontend (customer/vendor/admin dashboards, progress tracker)
-- [ ] Session 17 — Email templates (base Resend integration already in from Session 3)
-- [ ] Session 18 — Deployment (Railway/Render + Vercel)
+- [x] Session 17 — Branded HTML email templates (`src/services/emailTemplates.ts`), replacing the
+      inline `<p>` strings at all 8 `sendEmail()` call sites across `customerController.ts`,
+      `vendorController.ts`, `adminController.ts`, `reminderService.ts`. The Session 6 reminder
+      cron/logic itself was already done; this session was templates only.
+- [x] Session 18 — Deployed to Railway: Postgres provisioned, `DATABASE_URL`/`JWT_SECRET`/AWS S3
+      credentials set, migrations run automatically via `prisma migrate deploy` on every deploy,
+      admin account seeded. **Verified live** — real registration, vendor onboarding with an actual
+      S3 file upload, and DB writes all confirmed working against the production URL
+      `https://nkwado-backend-production.up.railway.app`. See notes 14–16 below for what came up
+      during deployment.
 
 ## Key deviations from the spec (and why)
 
@@ -125,6 +134,38 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
     in `pending`/`matched`/`quoted` (excludes `booked`, since those have moved on to a `Booking`).
     `GET /admin/activity` isn't detailed in the spec beyond "return admin activity log" — returns
     the most recent 100 `AdminActivity` rows with the acting admin's name/email joined in.
+
+14. **KNOWN GAP: `Quote` rows are never actually `PENDING` in normal use.** `POST
+    /vendors/quotes/:requestId` creates the quote with `status: 'SUBMITTED'` immediately — the
+    vendor submits a price and the quote exists in one step, there's no separate "invited, awaiting
+    response" state in the current API design. That means the Session 6 deadline-reminder job
+    (`reminderService.ts`, matches on `status: 'PENDING'`) and the 24h auto-expiry currently have
+    **no real quotes to act on** — discovered while testing Session 17's reminder email templates,
+    had to manually flip a quote to `PENDING` via SQL to trigger them, same as Session 6's original
+    testing did. Not fixed here since it's a design question (would need an actual "invite sent"
+    step before a vendor submits pricing) rather than a templates bug — flagged for the user to
+    decide whether the flow should change, or whether reminders/expiry are just dead code for now.
+
+15. **Session 18 deployment troubleshooting, for reference:** two real issues came up going live on
+    Railway, both worth knowing if this ever needs to be redeployed elsewhere:
+    - `DATABASE_URL` isn't automatically wired to a newly-added Postgres plugin — has to be
+      manually set to `${{Postgres.DATABASE_URL}}` (or the equivalent reference syntax) in the
+      backend service's Variables.
+    - Got a `PermanentRedirect` S3 error (`must be addressed using the specified endpoint`) despite
+      `AWS_REGION` visually showing the correct value (`eu-west-2`) in Railway's UI — root cause was
+      an invisible character from copy-pasting the value in; deleting and retyping the variable
+      fresh fixed it. If S3 uploads ever fail with that specific error again, retype the region var
+      instead of just eyeballing it.
+
+16. **Session 17 email templates** (`src/services/emailTemplates.ts`) cover the spec's 6 named
+    templates, mapped to the 8 actual call sites (booking-confirmed and deadline-reminder each have
+    a vendor variant and a customer variant): `vendorInquiryEmail`, `quoteSubmittedEmail`,
+    `reminderVendorEmail`, `reminderCustomerEmail`, `bookingConfirmedCustomerEmail` (includes the
+    bill breakdown + a link to `billPdfUrl`), `bookingConfirmedVendorEmail`, `vendorApprovedEmail`,
+    `vendorRejectedEmail`. All share a `baseLayout()` wrapper (teal/peacock-adjacent branding per
+    the spec's logo direction, inline styles since email clients don't reliably support
+    stylesheets). Tested locally by exercising all 8 flows end-to-end and confirming each subject
+    line logs correctly through the existing no-op email path (still no real `RESEND_API_KEY` set).
 
 ## Local dev setup (already done in this container, redo if it's fresh)
 

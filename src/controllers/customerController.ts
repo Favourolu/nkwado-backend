@@ -9,6 +9,7 @@ import {
 } from '../validation/customerValidation';
 import { matchVendorsForRequest, estimateVendorBasePrice, VendorMatch } from '../services/vendorMatchingService';
 import { sendEmail } from '../services/emailService';
+import { vendorInquiryEmail, bookingConfirmedCustomerEmail, bookingConfirmedVendorEmail } from '../services/emailTemplates';
 import { generateBookingBillPdf } from '../services/pdfService';
 import { uploadToS3 } from '../services/s3Service';
 
@@ -76,13 +77,10 @@ export async function submitQuestionnaire(req: Request, res: Response, next: Nex
         include: { user: true },
       });
 
+      const inquiryEmail = vendorInquiryEmail({ eventType: value.eventType, deadlineAt: expiresAt });
       await Promise.all(
         matchedVendors.map((vendor) =>
-          sendEmail({
-            to: vendor.user.email,
-            subject: `New event inquiry: ${value.eventType}`,
-            html: `<p>You've been matched to a new ${value.eventType.toLowerCase()} event request. Respond within 24 hours.</p>`,
-          })
+          sendEmail({ to: vendor.user.email, ...inquiryEmail })
         )
       );
     }
@@ -276,21 +274,26 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
 
     const customerUser = await prisma.user.findUnique({ where: { id: req.user!.userId } });
 
+    const vendorBookingEmail = bookingConfirmedVendorEmail({
+      bookingId: booking.id,
+      eventType: eventRequest.eventType,
+    });
+
     await Promise.all([
       customerUser
         ? sendEmail({
             to: customerUser.email,
-            subject: 'Your Nkwado booking is confirmed',
-            html: `<p>Your booking (${booking.id}) is confirmed. Total: NGN ${totalAmount.toLocaleString()}.</p>`,
+            ...bookingConfirmedCustomerEmail({
+              bookingId: booking.id,
+              eventType: eventRequest.eventType,
+              subtotal,
+              serviceCharge,
+              totalAmount,
+              billPdfUrl,
+            }),
           })
         : Promise.resolve(),
-      ...quotes.map((q) =>
-        sendEmail({
-          to: q.vendor.user.email,
-          subject: 'Booking confirmed',
-          html: `<p>Your quote for booking ${booking.id} has been accepted.</p>`,
-        })
-      ),
+      ...quotes.map((q) => sendEmail({ to: q.vendor.user.email, ...vendorBookingEmail })),
     ]);
 
     res.status(201).json({ booking: finalBooking });

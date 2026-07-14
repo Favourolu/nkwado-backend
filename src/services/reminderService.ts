@@ -1,5 +1,6 @@
 import prisma from '../utils/prisma';
 import { sendEmail } from './emailService';
+import { reminderVendorEmail, reminderCustomerEmail } from './emailTemplates';
 
 const REMINDER_LEAD_TIME_MS = 60 * 60 * 1000; // notify once a quote is within 1h of its deadline
 
@@ -24,18 +25,14 @@ export async function sendApproachingDeadlineReminders(): Promise<number> {
   });
 
   for (const quote of quotes) {
-    const deadlineStr = quote.deadlineAt.toISOString();
-
     await Promise.all([
       sendEmail({
         to: quote.vendor.user.email,
-        subject: 'Quote deadline approaching',
-        html: `<p>Respond by ${deadlineStr} for the ${quote.request.eventType.toLowerCase()} event inquiry.</p>`,
+        ...reminderVendorEmail({ eventType: quote.request.eventType, deadlineAt: quote.deadlineAt }),
       }),
       sendEmail({
         to: quote.request.customer.user.email,
-        subject: "Vendors haven't responded yet",
-        html: `<p>One or more vendors for your ${quote.request.eventType.toLowerCase()} event haven't submitted a quote yet. Their deadline is ${deadlineStr}.</p>`,
+        ...reminderCustomerEmail({ eventType: quote.request.eventType, deadlineAt: quote.deadlineAt }),
       }),
     ]);
 
