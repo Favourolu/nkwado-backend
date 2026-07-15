@@ -6,6 +6,7 @@ import authRoutes from './routes/authRoutes';
 import vendorRoutes from './routes/vendorRoutes';
 import customerRoutes from './routes/customerRoutes';
 import adminRoutes from './routes/adminRoutes';
+import webhookRoutes from './routes/webhookRoutes';
 
 const app: Application = express();
 
@@ -32,6 +33,7 @@ app.use('/auth', authRoutes);
 app.use('/vendors', vendorRoutes);
 app.use('/customers', customerRoutes);
 app.use('/admin', adminRoutes);
+app.use('/webhooks', webhookRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

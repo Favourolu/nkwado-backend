@@ -50,8 +50,9 @@ model Customer {
   updatedAt DateTime @updatedAt
 
   // Relations
-  requests EventRequest[]
-  bookings Booking[]
+  requests         EventRequest[]
+  bookings         Booking[]
+  loanApplications LoanApplication[]
 
   @@index([userId])
 }
@@ -241,12 +242,12 @@ model Quote {
   version Int @default(0)
 
   // Timeline
-  sentAt             DateTime  @default(now()) // When the invitation was sent to the vendor
-  submittedAt        DateTime? // When vendor responded
-  deadlineAt         DateTime // 24h from sentAt (PENDING -> response window)
-  submittedExpiresAt DateTime? // Set at submission time; a SUBMITTED quote never booked by this point auto-expires
-  respondedAt        DateTime? // When vendor submitted
-  reminderSentAt     DateTime? // Set once the approaching-deadline (PENDING phase) reminder email has gone out
+  sentAt                  DateTime  @default(now()) // When the invitation was sent to the vendor
+  submittedAt             DateTime? // When vendor responded
+  deadlineAt              DateTime // 24h from sentAt (PENDING -> response window)
+  submittedExpiresAt      DateTime? // Set at submission time; a SUBMITTED quote never booked by this point auto-expires
+  respondedAt             DateTime? // When vendor submitted
+  reminderSentAt          DateTime? // Set once the approaching-deadline (PENDING phase) reminder email has gone out
   submittedReminderSentAt DateTime? // Set once the approaching-submittedExpiresAt (SUBMITTED phase) reminder has gone out
 
   createdAt DateTime @default(now())
@@ -276,6 +277,14 @@ enum PaymentStatus {
   FAILED     @map("failed")
 }
 
+// How the customer is settling the booking total. FULL_PAYMENT is the existing (still
+// unbuilt, per CLAUDE.md note 10) Parthian payment-capture path; FINANCED routes through
+// the Parthian credit facility instead - see LoanApplication.
+enum PaymentMethod {
+  FULL_PAYMENT
+  FINANCED
+}
+
 model Booking {
   id         String       @id @default(cuid())
   customerId String
@@ -299,9 +308,11 @@ model Booking {
   billGeneratedAt DateTime?
 
   // Payment
-  status        BookingStatus  @default(PENDING)
-  paymentStatus PaymentStatus?
-  paymentId     String? // Reference to Parthian payment
+  status          BookingStatus    @default(PENDING)
+  paymentMethod   PaymentMethod    @default(FULL_PAYMENT)
+  paymentStatus   PaymentStatus?
+  paymentId       String? // Reference to Parthian payment
+  loanApplication LoanApplication?
 
   // Tracking
   createdAt DateTime @default(now())
@@ -309,6 +320,46 @@ model Booking {
 
   @@index([customerId])
   @@index([requestId])
+  @@index([status])
+}
+
+// ============= CREDIT / FINANCING (Parthian) =============
+//
+// Parthian is the backing/payment partner already referenced by Booking.paymentId (see
+// CLAUDE.md note 10 - straight payment capture itself isn't wired in yet either). This is
+// the first real Parthian integration surface, built to also cover plain payment capture
+// later rather than the two being separate efforts. The actual Parthian API calls are
+// stubbed in financingService.ts pending real API docs/credentials - see CLAUDE.md note 19.
+
+enum LoanApplicationStatus {
+  PENDING_REVIEW // Submitted to Parthian, awaiting their underwriting decision
+  APPROVED // Parthian approved but hasn't disbursed yet
+  REJECTED
+  DISBURSED // Funds released to Nkwado; booking payment is settled
+  DEFAULTED // Customer stopped repaying Parthian post-disbursement (informational only - Nkwado already got paid)
+}
+
+model LoanApplication {
+  id         String   @id @default(cuid())
+  bookingId  String   @unique // one application per booking
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  principalAmount Float // Amount financed (Booking.totalAmount at application time)
+  planId          String // Stub plan identifier, e.g. "3_MONTH" - see financingService.ts
+  tenorMonths     Int
+  monthlyPayment  Float
+  totalRepayable  Float
+
+  status              LoanApplicationStatus @default(PENDING_REVIEW)
+  parthianReferenceId String? // Set once the (stubbed) submission to Parthian succeeds
+  rejectionReason     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
   @@index([status])
 }
 

@@ -10,6 +10,7 @@ import {
   getActivityLog,
   getCronHealth,
   getEmailFailures,
+  listLoans,
 } from '../controllers/adminController';
 
 const router = Router();
@@ -25,5 +26,6 @@ router.get('/dashboard', getDashboardMetrics);
 router.get('/activity', getActivityLog);
 router.get('/health/cron', getCronHealth);
 router.get('/email-failures', getEmailFailures);
+router.get('/loans', listLoans);
 
 export default router;

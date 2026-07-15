@@ -49,6 +49,23 @@ export const customizeRequestSchema = Joi.object({
   notes: Joi.string().trim().optional().allow(''),
 });
 
+export const PAYMENT_METHODS = ['FULL_PAYMENT', 'FINANCED'];
+
 export const createBookingSchema = Joi.object({
   selectedQuoteIds: Joi.array().items(Joi.string()).min(1).required(),
+  paymentMethod: Joi.string()
+    .valid(...PAYMENT_METHODS)
+    .optional()
+    .default('FULL_PAYMENT'),
+  // Which financing plan (see financingService.ts) the customer picked - only meaningful,
+  // and only required, when paymentMethod is FINANCED.
+  planId: Joi.string().when('paymentMethod', {
+    is: 'FINANCED',
+    then: Joi.required(),
+    otherwise: Joi.forbidden(),
+  }),
+});
+
+export const financingOptionsQuerySchema = Joi.object({
+  amount: Joi.number().positive().required(),
 });

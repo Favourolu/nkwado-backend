@@ -4,6 +4,18 @@ Event planning marketplace MVP backend. Full spec: `Nkwado_MVP_Execution_Plan` (
 Claude Code execution plan, Phases 1–8). Being built session-by-session on branch
 `claude/nkwado-mvp-phase-1-j77989`. Each session = one commit, tested locally before pushing.
 
+## Business context
+
+This app is being built for the user's CFO. **Parthian** is the confirmed backing/payment
+partner for Nkwado, and — per direct confirmation from the user — Parthian already has its
+own lending/BNPL product. That means:
+- Payment processing (not yet built — see note 10) and the credit/financing facility (see
+  note 21) both integrate against **Parthian specifically**, not a generic/pluggable
+  multi-provider abstraction. There is no other payment or lending partner in the picture.
+- When either of those integrations needs real API docs/credentials, they come from whoever
+  owns the Parthian relationship on the CFO's side — same category of dependency as the
+  deferred `ANTHROPIC_API_KEY` (note 7).
+
 ## Progress
 
 - [x] Session 1 — Express + TypeScript scaffold, Prisma schema, JWT/bcrypt utils, error middleware
@@ -43,6 +55,12 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
 - [x] Post-deployment — Full architecture audit (failure-mode map across DB integrity, auth,
       file uploads, external APIs, quote deadlines, admin SPOF) followed by fixing every finding.
       See note 18 below.
+- [x] Post-deployment — `GET /customers/requests` (list-all-my-requests endpoint) and a fix for
+      legacy full-URL values breaking presigned S3 downloads post-audit. See notes 19–20.
+- [x] Post-deployment — Credit/financing facility (Parthian-backed): schema, financing-options
+      endpoint, `paymentMethod`/`planId` on booking creation, webhook, customer + admin loan
+      visibility. Parthian API calls themselves are stubbed pending real credentials/docs. See
+      note 21.
 
 ## Key deviations from the spec (and why)
 
@@ -289,6 +307,90 @@ Claude Code execution plan, Phases 1–8). Being built session-by-session on bra
       booking — would need soft-delete semantics, a bigger change than this pass's scope) and
       malware/content scanning on uploads (the MIME allowlist + presigned URLs close the acute
       XSS/public-exposure risk; AV scanning is a reasonable future addition, not blocking).
+
+19. **FIXED: legacy full-URL values broke presigned S3 downloads.** Note 18's migration to
+    key-based S3 storage only changed how *new* uploads are stored — existing `Vendor.cacDocument`
+    /`supportingDocuments`/`profilePhotos`/`Booking.billPdfUrl` rows still held the old
+    `https://bucket.s3.region.amazonaws.com/key` (or `local://uploads/key`) strings, so
+    `getSignedDownloadUrl()` was signing a `GetObjectCommand` with the entire URL as the `Key`,
+    which S3 correctly rejects with `AccessDenied`. `s3Service.ts`'s `normalizeToKey()` now
+    strips either legacy shape down to the real key before signing. Verified against all three
+    shapes (full public URL, `local://` URL, already-bare key).
+
+20. **`GET /customers/requests` added** — lists every `EventRequest` the authenticated customer
+    has ever submitted, most recent first, scoped to their own `customerId` like every other
+    customer route. Returns the same per-request fields already stored (`eventType`, `eventDate`,
+    `guestCount`, `location`, `budgetRange`, `specialRequirements`, `status`, `createdAt`,
+    `aiMatchedVendors`) so the frontend can build a "my requests" list without N lookups by ID.
+    Verified: 401 with no token, 403 for a `VENDOR` token, and one customer's list never includes
+    another customer's requests.
+
+21. **Credit/financing facility (Parthian-backed) — schema + endpoints, Parthian API itself
+    stubbed.** Parthian is the confirmed backing/payment partner (already referenced by the
+    original `Booking.paymentId` comment) and, per direct confirmation, already has its own
+    lending/BNPL product — so this integrates against Parthian specifically rather than a
+    generic multi-lender abstraction, matching how the codebase already treats Parthian as a
+    single hardcoded integration point rather than a pluggable one. **Straight Parthian payment
+    capture itself still isn't built** (see note 10) — this is the first real Parthian
+    integration surface, deliberately shaped so plain payment capture can reuse the same
+    client/webhook plumbing later instead of that being a second, separate effort.
+    - Schema (`20260714163000_credit_financing`): `Booking.paymentMethod` (`FULL_PAYMENT` default
+      / `FINANCED`), new `LoanApplication` model (`bookingId` unique FK, `customerId` FK,
+      `principalAmount`, `planId`/`tenorMonths`, `monthlyPayment`/`totalRepayable`,
+      `status`: `PENDING_REVIEW`/`APPROVED`/`REJECTED`/`DISBURSED`/`DEFAULTED`,
+      `parthianReferenceId`, `rejectionReason`). Purely additive — no existing columns touched.
+      **Deliberately not storing BVN/NIN/bank details** — that PII should go straight to Parthian
+      (ideally via an embeddable KYC widget once their docs exist), Nkwado only ever holds
+      `parthianReferenceId` as a pointer, to keep sensitive-data handling (and the associated
+      compliance surface) off Nkwado's own DB.
+    - `src/services/financingService.ts` — same "rule-based stub with the real integration's
+      input/output shape" approach as `vendorMatchingService.ts`. `getFinancingOptions(amount)`
+      returns three illustrative flat-fee plans (3/6/12 months); `resolvePlan(amount, planId)`
+      recomputes a chosen plan server-side (a client-supplied `monthlyPayment`/`totalRepayable`
+      is never trusted, only the `planId`); `submitToParthian()` returns a fake
+      `stub_<uuid>` reference and always leaves the application `PENDING_REVIEW` — deliberately
+      does **not** fake an instant approval, so the async webhook-driven flow is exercised
+      exactly like it will be in production.
+    - `GET /customers/financing-options?amount=` — plan menu for a given amount (usable before a
+      booking exists, so the customer can compare before committing).
+    - `POST /customers/booking/:requestId` gained two optional fields, `paymentMethod` and
+      `planId` (required together when `paymentMethod: 'FINANCED'`). The existing booking
+      transaction (note 18) is unchanged for `FULL_PAYMENT`; when `FINANCED`, a
+      `LoanApplication` row is created inside the same transaction as the booking (so a loan
+      row can never exist without its booking or vice versa), then `submitToParthian()` is
+      called *after* the transaction commits (same reasoning as the bill-PDF upload happening
+      post-commit — an external call mid-transaction can't be rolled back). `Booking.status`
+      still confirms immediately (vendors are locked in regardless of financing outcome,
+      consistent with note 18's transaction guarantees) — `paymentStatus` is what tracks the
+      money side separately. **Known gap, deliberately out of scope for this pass:** if
+      Parthian later rejects the loan, there's no automatic booking-cancellation/quote-release
+      flow — the booking stands and `paymentStatus` flips to `FAILED`, leaving reconciliation to
+      an admin/ops process rather than an automated compensating transaction.
+    - `POST /webhooks/parthian/loan-status` — receives Parthian's async decision
+      (`APPROVED`/`REJECTED`/`DISBURSED`/`DEFAULTED`), keyed on `parthianReferenceId`. Auth is a
+      shared-secret header (`X-Parthian-Webhook-Secret` against `PARTHIAN_WEBHOOK_SECRET`,
+      constant-time compared) since Parthian's actual webhook-signing scheme isn't known yet —
+      **fails closed**: an unset secret rejects every call rather than accepting unauthenticated
+      webhooks. `DISBURSED` sets `Booking.paymentStatus: COMPLETED`; `REJECTED` sets it
+      `FAILED` and emails the customer (`loanRejectedEmail`); `APPROVED` emails the customer
+      (`loanApprovedEmail`) without changing payment status yet, since approval isn't the same
+      as funds actually landing.
+    - `GET /customers/loans` (mirrors `listBookings`) and `GET /admin/loans` (mirrors the
+      `getActivityLog` most-recent-100 pattern, no pagination — not expected to need it yet)
+      round out visibility for both sides.
+    - Tested locally end-to-end: financing-options returns correct flat-fee math for a real
+      booking total; creating a `FINANCED` booking locks the vendor quote exactly like a
+      `FULL_PAYMENT` one and creates a `PENDING_REVIEW` loan row with a stub reference;
+      unauthenticated webhook calls get 401; an authenticated `APPROVED` call updates the loan
+      row and sends the approval email; a subsequent `DISBURSED` call flips
+      `Booking.paymentStatus` to `completed`; a `REJECTED` call on a separate booking sets
+      `FAILED` + the rejection email; an unknown `planId` 400s with "Unknown financing plan"
+      before any DB write.
+    - **What's needed before this becomes a real integration:** Parthian's actual API docs
+      (auth scheme, loan-application request/response shape, webhook payload format and real
+      signature verification method, whether they expose a hosted KYC flow) — same category of
+      dependency as the deferred `ANTHROPIC_API_KEY` in note 7. Until then, `financingService.ts`
+      is the single place that needs to change; no caller should need touching.
 
 ## Local dev setup (already done in this container, redo if it's fresh)
 

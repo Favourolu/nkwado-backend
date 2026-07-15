@@ -164,6 +164,34 @@ export function vendorApprovedEmail(input: { businessName: string }): EmailConte
   };
 }
 
+/** Sent to the customer when Parthian approves their financing application. */
+export function loanApprovedEmail(input: { eventType: string; monthlyPayment: number; tenorMonths: number }): EmailContent {
+  return {
+    subject: 'Your financing was approved',
+    html: baseLayout(
+      'Your financing application was approved',
+      `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">Financing approved 🎉</h2>
+       <p>Your financing for your ${input.eventType.toLowerCase()} event booking has been approved.</p>
+       <p>Plan: <strong>${input.tenorMonths} months</strong> at <strong>${formatNaira(input.monthlyPayment)}/month</strong>.</p>
+       <p>Log in to your Nkwado dashboard for the full repayment schedule.</p>`
+    ),
+  };
+}
+
+/** Sent to the customer when Parthian rejects their financing application. */
+export function loanRejectedEmail(input: { eventType: string; rejectionReason?: string | null }): EmailContent {
+  return {
+    subject: 'Update on your financing application',
+    html: baseLayout(
+      'An update on your financing application',
+      `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">Financing not approved</h2>
+       <p>Your financing application for your ${input.eventType.toLowerCase()} event booking was not approved.</p>
+       ${input.rejectionReason ? `<p><strong>Reason:</strong> ${input.rejectionReason}</p>` : ''}
+       <p>Your booking is still confirmed — log in to your Nkwado dashboard to arrange payment another way.</p>`
+    ),
+  };
+}
+
 /** Sent to a vendor if an admin rejects their application. */
 export function vendorRejectedEmail(input: { businessName: string; rejectionReason: string }): EmailContent {
   return {
