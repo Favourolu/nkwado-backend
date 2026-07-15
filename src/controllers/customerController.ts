@@ -356,6 +356,10 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
           totalAmount,
           status: 'CONFIRMED',
           paymentMethod: value.paymentMethod,
+          // FULL_PAYMENT leaves this null (payment capture itself isn't built yet - see
+          // CLAUDE.md note 10); FINANCED gets an explicit PENDING so admin/customer views
+          // show something meaningful instead of a blank field while Parthian decides.
+          paymentStatus: value.paymentMethod === 'FINANCED' ? 'PENDING' : undefined,
         },
       });
 
@@ -572,7 +576,12 @@ export async function getProgress(req: Request, res: Response, next: NextFunctio
     );
 
     const bookingConfirmed = !!booking && ['CONFIRMED', 'PAID', 'COMPLETED'].includes(booking.status);
-    const paymentCompleted = !!booking && ['PAID', 'COMPLETED'].includes(booking.status);
+    // Booking.status never actually transitions to PAID/COMPLETED anywhere in this codebase -
+    // the real payment-completion signal is paymentStatus, set to COMPLETED by the Parthian
+    // loan webhook on disbursement. Checking status alone here would mean a financed booking's
+    // "Complete payment" step could never show as done, even after real disbursement.
+    const paymentCompleted =
+      !!booking && (booking.paymentStatus === 'COMPLETED' || ['PAID', 'COMPLETED'].includes(booking.status));
 
     const steps = [
       { name: 'Tell us about your event', status: 'completed', date: eventRequest.createdAt },
