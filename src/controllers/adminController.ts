@@ -233,8 +233,11 @@ export async function getDashboardMetrics(req: Request, res: Response, next: Nex
       prisma.customer.count(),
       prisma.eventRequest.count({ where: { status: { in: ['PENDING', 'MATCHED', 'QUOTED'] } } }),
       prisma.booking.count({ where: { status: 'COMPLETED' } }),
+      // OR'd on paymentStatus too - a FINANCED booking settles via paymentStatus: COMPLETED
+      // (set by the Parthian webhook on disbursement) without Booking.status ever moving off
+      // CONFIRMED, so status alone would silently exclude every financed booking's revenue.
       prisma.booking.findMany({
-        where: { status: { in: REVENUE_COUNTED_STATUSES } },
+        where: { OR: [{ status: { in: REVENUE_COUNTED_STATUSES } }, { paymentStatus: 'COMPLETED' }] },
         select: { totalAmount: true },
       }),
     ]);

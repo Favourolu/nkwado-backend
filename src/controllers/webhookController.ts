@@ -44,7 +44,7 @@ export async function handleParthianLoanWebhook(req: Request, res: Response, nex
       throw new AppError(error.details[0].message, 400);
     }
 
-    const loan = await prisma.loanApplication.findFirst({
+    const loan = await prisma.loanApplication.findUnique({
       where: { parthianReferenceId: value.parthianReferenceId },
       include: {
         booking: { include: { request: true } },

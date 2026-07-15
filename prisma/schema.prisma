@@ -354,7 +354,7 @@ model LoanApplication {
   totalRepayable  Float
 
   status              LoanApplicationStatus @default(PENDING_REVIEW)
-  parthianReferenceId String? // Set once the (stubbed) submission to Parthian succeeds
+  parthianReferenceId String?               @unique // Set once the (stubbed) submission to Parthian succeeds
   rejectionReason     String?
 
   createdAt DateTime @default(now())
