@@ -6,6 +6,24 @@ interface EmailContent {
 const BRAND_COLOR = '#0f5c5c'; // deep teal, peacock-adjacent per the spec's logo direction
 const ACCENT_COLOR = '#1a8a8a';
 
+/**
+ * Escapes user-controlled values before they're interpolated into email HTML. Several of
+ * the values below originate from untrusted input — a vendor's own `businessName`, an
+ * admin's free-text `rejectionReason` — and are rendered in a *different* user's inbox
+ * (customer, vendor). Without escaping, a value like `<a href="http://evil">clickme</a>` or
+ * an `<img>` beacon would render as live HTML in the recipient's email client (content
+ * spoofing / phishing / tracking-pixel injection). Escaping neutralizes the markup so it
+ * shows as literal text.
+ */
+function esc(value: string | number): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function formatNaira(amount: number): string {
   return `₦${amount.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -44,19 +62,19 @@ function baseLayout(preheader: string, bodyHtml: string): string {
 }
 
 function button(label: string, url: string): string {
-  return `<a href="${url}" style="display:inline-block;margin-top:16px;padding:12px 24px;background-color:${ACCENT_COLOR};color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;">${label}</a>`;
+  return `<a href="${esc(url)}" style="display:inline-block;margin-top:16px;padding:12px 24px;background-color:${ACCENT_COLOR};color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;">${esc(label)}</a>`;
 }
 
 /** Sent to a vendor when they're matched to a new customer event request. */
 export function vendorInquiryEmail(input: { eventType: string; deadlineAt: Date }): EmailContent {
-  const eventLabel = input.eventType.toLowerCase();
+  const eventLabel = esc(input.eventType.toLowerCase());
   return {
     subject: `New event inquiry: ${input.eventType}`,
     html: baseLayout(
       `You've been matched to a new ${eventLabel} event`,
       `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">New event inquiry</h2>
        <p>You've been matched to a new <strong>${eventLabel}</strong> event request on Nkwado.</p>
-       <p>Please respond with a quote by <strong>${input.deadlineAt.toUTCString()}</strong> — after that, the request may be reassigned.</p>`
+       <p>Please respond with a quote by <strong>${esc(input.deadlineAt.toUTCString())}</strong> — after that, the request may be reassigned.</p>`
     ),
   };
 }
@@ -66,9 +84,9 @@ export function quoteSubmittedEmail(input: { businessName: string; basePrice: nu
   return {
     subject: `New quote from ${input.businessName}`,
     html: baseLayout(
-      `${input.businessName} sent you a quote`,
+      `${esc(input.businessName)} sent you a quote`,
       `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">New quote received</h2>
-       <p><strong>${input.businessName}</strong> submitted a quote of <strong>${formatNaira(input.basePrice)}</strong> for your ${input.eventType.toLowerCase()} event.</p>
+       <p><strong>${esc(input.businessName)}</strong> submitted a quote of <strong>${formatNaira(input.basePrice)}</strong> for your ${esc(input.eventType.toLowerCase())} event.</p>
        <p>Log in to your Nkwado dashboard to review it.</p>`
     ),
   };
@@ -81,8 +99,8 @@ export function reminderVendorEmail(input: { eventType: string; deadlineAt: Date
     html: baseLayout(
       'Your quote deadline is approaching',
       `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">Deadline approaching</h2>
-       <p>You have a pending quote request for a ${input.eventType.toLowerCase()} event.</p>
-       <p>Please respond by <strong>${input.deadlineAt.toUTCString()}</strong> or the request will expire.</p>`
+       <p>You have a pending quote request for a ${esc(input.eventType.toLowerCase())} event.</p>
+       <p>Please respond by <strong>${esc(input.deadlineAt.toUTCString())}</strong> or the request will expire.</p>`
     ),
   };
 }
@@ -94,8 +112,8 @@ export function reminderCustomerEmail(input: { eventType: string; deadlineAt: Da
     html: baseLayout(
       "One or more vendors haven't responded yet",
       `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">Still waiting on a quote</h2>
-       <p>One or more vendors for your ${input.eventType.toLowerCase()} event haven't submitted a quote yet.</p>
-       <p>Their deadline is <strong>${input.deadlineAt.toUTCString()}</strong>. We'll keep you posted.</p>`
+       <p>One or more vendors for your ${esc(input.eventType.toLowerCase())} event haven't submitted a quote yet.</p>
+       <p>Their deadline is <strong>${esc(input.deadlineAt.toUTCString())}</strong>. We'll keep you posted.</p>`
     ),
   };
 }
@@ -105,10 +123,10 @@ export function submittedQuoteExpiringEmail(input: { businessName: string; event
   return {
     subject: `Quote from ${input.businessName} is expiring soon`,
     html: baseLayout(
-      `Your quote from ${input.businessName} expires soon`,
+      `Your quote from ${esc(input.businessName)} expires soon`,
       `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">A quote is about to expire</h2>
-       <p><strong>${input.businessName}</strong> sent you a quote for your ${input.eventType.toLowerCase()} event that you haven't booked yet.</p>
-       <p>It expires on <strong>${input.expiresAt.toUTCString()}</strong> — log in to your Nkwado dashboard to accept it before then.</p>`
+       <p><strong>${esc(input.businessName)}</strong> sent you a quote for your ${esc(input.eventType.toLowerCase())} event that you haven't booked yet.</p>
+       <p>It expires on <strong>${esc(input.expiresAt.toUTCString())}</strong> — log in to your Nkwado dashboard to accept it before then.</p>`
     ),
   };
 }
@@ -127,7 +145,7 @@ export function bookingConfirmedCustomerEmail(input: {
     html: baseLayout(
       'Your booking is confirmed',
       `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">Booking confirmed 🎉</h2>
-       <p>Your ${input.eventType.toLowerCase()} booking (<strong>${input.bookingId}</strong>) is confirmed.</p>
+       <p>Your ${esc(input.eventType.toLowerCase())} booking (<strong>${esc(input.bookingId)}</strong>) is confirmed.</p>
        <table role="presentation" width="100%" style="margin-top:16px;border-collapse:collapse;">
          <tr><td style="padding:6px 0;color:#6b7280;">Subtotal</td><td style="padding:6px 0;text-align:right;">${formatNaira(input.subtotal)}</td></tr>
          <tr><td style="padding:6px 0;color:#6b7280;">Service charge (10%)</td><td style="padding:6px 0;text-align:right;">${formatNaira(input.serviceCharge)}</td></tr>
@@ -145,7 +163,7 @@ export function bookingConfirmedVendorEmail(input: { bookingId: string; eventTyp
     html: baseLayout(
       'A customer confirmed your quote',
       `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">Your quote was accepted</h2>
-       <p>Your quote for booking <strong>${input.bookingId}</strong> (${input.eventType.toLowerCase()} event) has been accepted.</p>
+       <p>Your quote for booking <strong>${esc(input.bookingId)}</strong> (${esc(input.eventType.toLowerCase())} event) has been accepted.</p>
        <p>Log in to your Nkwado dashboard for the full details.</p>`
     ),
   };
@@ -158,7 +176,7 @@ export function vendorApprovedEmail(input: { businessName: string }): EmailConte
     html: baseLayout(
       'Your vendor application was approved',
       `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">You're approved 🎉</h2>
-       <p>Congratulations! <strong>${input.businessName}</strong> is now an approved vendor on Nkwado.</p>
+       <p>Congratulations! <strong>${esc(input.businessName)}</strong> is now an approved vendor on Nkwado.</p>
        <p>You can now receive event inquiries and submit quotes.</p>`
     ),
   };
@@ -171,8 +189,8 @@ export function loanApprovedEmail(input: { eventType: string; monthlyPayment: nu
     html: baseLayout(
       'Your financing application was approved',
       `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">Financing approved 🎉</h2>
-       <p>Your financing for your ${input.eventType.toLowerCase()} event booking has been approved.</p>
-       <p>Plan: <strong>${input.tenorMonths} months</strong> at <strong>${formatNaira(input.monthlyPayment)}/month</strong>.</p>
+       <p>Your financing for your ${esc(input.eventType.toLowerCase())} event booking has been approved.</p>
+       <p>Plan: <strong>${esc(input.tenorMonths)} months</strong> at <strong>${formatNaira(input.monthlyPayment)}/month</strong>.</p>
        <p>Log in to your Nkwado dashboard for the full repayment schedule.</p>`
     ),
   };
@@ -185,8 +203,8 @@ export function loanRejectedEmail(input: { eventType: string; rejectionReason?: 
     html: baseLayout(
       'An update on your financing application',
       `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">Financing not approved</h2>
-       <p>Your financing application for your ${input.eventType.toLowerCase()} event booking was not approved.</p>
-       ${input.rejectionReason ? `<p><strong>Reason:</strong> ${input.rejectionReason}</p>` : ''}
+       <p>Your financing application for your ${esc(input.eventType.toLowerCase())} event booking was not approved.</p>
+       ${input.rejectionReason ? `<p><strong>Reason:</strong> ${esc(input.rejectionReason)}</p>` : ''}
        <p>Your booking is still confirmed — log in to your Nkwado dashboard to arrange payment another way.</p>`
     ),
   };
@@ -199,8 +217,8 @@ export function vendorRejectedEmail(input: { businessName: string; rejectionReas
     html: baseLayout(
       'An update on your vendor application',
       `<h2 style="margin:0 0 12px;color:${BRAND_COLOR};">Application not approved</h2>
-       <p>Your application for <strong>${input.businessName}</strong> was not approved.</p>
-       <p><strong>Reason:</strong> ${input.rejectionReason}</p>
+       <p>Your application for <strong>${esc(input.businessName)}</strong> was not approved.</p>
+       <p><strong>Reason:</strong> ${esc(input.rejectionReason)}</p>
        <p>You're welcome to update your details and resubmit.</p>`
     ),
   };
