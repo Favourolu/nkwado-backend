@@ -4,6 +4,18 @@ Event planning marketplace MVP backend. Full spec: `Nkwado_MVP_Execution_Plan` (
 Claude Code execution plan, Phases 1–8). Being built session-by-session on branch
 `claude/nkwado-mvp-phase-1-j77989`. Each session = one commit, tested locally before pushing.
 
+## Business context
+
+This app is being built for the user's CFO. **Parthian** is the confirmed backing/payment
+partner for Nkwado, and — per direct confirmation from the user — Parthian already has its
+own lending/BNPL product. That means:
+- Payment processing (not yet built — see note 10) and the credit/financing facility (see
+  note 21) both integrate against **Parthian specifically**, not a generic/pluggable
+  multi-provider abstraction. There is no other payment or lending partner in the picture.
+- When either of those integrations needs real API docs/credentials, they come from whoever
+  owns the Parthian relationship on the CFO's side — same category of dependency as the
+  deferred `ANTHROPIC_API_KEY` (note 7).
+
 ## Progress
 
 - [x] Session 1 — Express + TypeScript scaffold, Prisma schema, JWT/bcrypt utils, error middleware
