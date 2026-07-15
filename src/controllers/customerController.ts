@@ -12,7 +12,7 @@ import { matchVendorsForRequest, estimateVendorBasePrice, VendorMatch } from '..
 import { sendEmail } from '../services/emailService';
 import { vendorInquiryEmail, bookingConfirmedCustomerEmail, bookingConfirmedVendorEmail } from '../services/emailTemplates';
 import { generateBookingBillPdf } from '../services/pdfService';
-import { uploadToS3, getSignedDownloadUrl } from '../services/s3Service';
+import { uploadToS3, getSignedDownloadUrl, getSignedDownloadUrls } from '../services/s3Service';
 import { createQuoteInvitations } from '../services/quoteInvitationService';
 import { getFinancingOptions, resolvePlan, submitToParthian } from '../services/financingService';
 
@@ -172,6 +172,52 @@ export async function getRequestQuotes(req: Request, res: Response, next: NextFu
     });
 
     res.json({ quotes: formatted });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Public-facing vendor profile for a customer reviewing a match or quote - the "View
+ * details" click-through the matched-vendors/quotes list never had a backend endpoint to
+ * call. Only ever returns APPROVED vendors (404 otherwise) so a customer can't probe the
+ * vetting status of a PENDING/REJECTED vendor, and never returns cacDocument or
+ * rejectionReason - those stay admin-only.
+ */
+export async function getVendorDetails(req: Request, res: Response, next: NextFunction) {
+  try {
+    const vendorId = String(req.params.vendorId);
+
+    const vendor = await prisma.vendor.findUnique({
+      where: { id: vendorId },
+      include: { listings: true, reviews: true },
+    });
+
+    if (!vendor || vendor.status !== 'APPROVED') {
+      throw new AppError('Vendor not found', 404);
+    }
+
+    const reviewCount = vendor.reviews.length;
+    const rating = reviewCount > 0 ? vendor.reviews.reduce((sum, r) => sum + r.rating, 0) / reviewCount : null;
+
+    res.json({
+      vendor: {
+        id: vendor.id,
+        businessName: vendor.businessName,
+        businessType: vendor.businessType,
+        category: vendor.category,
+        description: vendor.description,
+        location: vendor.location,
+        phoneNumber: vendor.phoneNumber,
+        priceRange: vendor.priceRange,
+        services: vendor.services,
+        profilePhotos: await getSignedDownloadUrls(vendor.profilePhotos),
+        listings: vendor.listings,
+        reviews: vendor.reviews.map((r) => ({ rating: r.rating, comment: r.comment, createdAt: r.createdAt })),
+        rating,
+        reviewCount,
+      },
+    });
   } catch (err) {
     next(err);
   }

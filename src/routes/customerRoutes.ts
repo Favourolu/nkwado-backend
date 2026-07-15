@@ -5,6 +5,7 @@ import {
   listMyRequests,
   getRequestById,
   getRequestQuotes,
+  getVendorDetails,
   customizeRequest,
   getBookingFinancingOptions,
   createBooking,
@@ -21,6 +22,7 @@ router.post('/questionnaire', submitQuestionnaire);
 router.get('/requests', listMyRequests);
 router.get('/requests/:requestId', getRequestById);
 router.get('/requests/:requestId/quotes', getRequestQuotes);
+router.get('/vendors/:vendorId', getVendorDetails);
 router.post('/customize/:requestId', customizeRequest);
 router.get('/financing-options', getBookingFinancingOptions);
 router.post('/booking/:requestId', createBooking);
