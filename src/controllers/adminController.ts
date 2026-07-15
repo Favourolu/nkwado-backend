@@ -297,6 +297,40 @@ export async function getEmailFailures(req: Request, res: Response, next: NextFu
   }
 }
 
+export async function listLoans(req: Request, res: Response, next: NextFunction) {
+  try {
+    const loans = await prisma.loanApplication.findMany({
+      include: { customer: { include: { user: true } }, booking: { include: { request: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+
+    const formatted = loans.map((loan) => ({
+      id: loan.id,
+      bookingId: loan.bookingId,
+      customer: {
+        firstName: loan.customer.user.firstName,
+        lastName: loan.customer.user.lastName,
+        email: loan.customer.user.email,
+      },
+      eventType: loan.booking.request.eventType,
+      principalAmount: loan.principalAmount,
+      planId: loan.planId,
+      tenorMonths: loan.tenorMonths,
+      monthlyPayment: loan.monthlyPayment,
+      totalRepayable: loan.totalRepayable,
+      status: loan.status,
+      parthianReferenceId: loan.parthianReferenceId,
+      rejectionReason: loan.rejectionReason,
+      createdAt: loan.createdAt,
+    }));
+
+    res.json({ loans: formatted });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getActivityLog(req: Request, res: Response, next: NextFunction) {
   try {
     const activity = await prisma.adminActivity.findMany({

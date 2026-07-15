@@ -6,8 +6,10 @@ import {
   getRequestById,
   getRequestQuotes,
   customizeRequest,
+  getBookingFinancingOptions,
   createBooking,
   listBookings,
+  listMyLoans,
   getProgress,
 } from '../controllers/customerController';
 
@@ -20,8 +22,10 @@ router.get('/requests', listMyRequests);
 router.get('/requests/:requestId', getRequestById);
 router.get('/requests/:requestId/quotes', getRequestQuotes);
 router.post('/customize/:requestId', customizeRequest);
+router.get('/financing-options', getBookingFinancingOptions);
 router.post('/booking/:requestId', createBooking);
 router.get('/bookings', listBookings);
+router.get('/loans', listMyLoans);
 router.get('/progress/:requestId', getProgress);
 
 export default router;

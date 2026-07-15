@@ -6,6 +6,7 @@ import {
   questionnaireSchema,
   customizeRequestSchema,
   createBookingSchema,
+  financingOptionsQuerySchema,
 } from '../validation/customerValidation';
 import { matchVendorsForRequest, estimateVendorBasePrice, VendorMatch } from '../services/vendorMatchingService';
 import { sendEmail } from '../services/emailService';
@@ -13,6 +14,7 @@ import { vendorInquiryEmail, bookingConfirmedCustomerEmail, bookingConfirmedVend
 import { generateBookingBillPdf } from '../services/pdfService';
 import { uploadToS3, getSignedDownloadUrl } from '../services/s3Service';
 import { createQuoteInvitations } from '../services/quoteInvitationService';
+import { getFinancingOptions, resolvePlan, submitToParthian } from '../services/financingService';
 
 const SERVICE_CHARGE_RATE = 0.1;
 
@@ -233,6 +235,24 @@ export async function customizeRequest(req: Request, res: Response, next: NextFu
   }
 }
 
+/**
+ * Plan options for financing a given amount (e.g. a booking's totalAmount, computed
+ * client-side from the selected quotes before the booking is actually created). Stubbed
+ * against Parthian - see financingService.ts.
+ */
+export async function getBookingFinancingOptions(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { error, value } = financingOptionsQuerySchema.validate(req.query);
+    if (error) {
+      throw new AppError(error.details[0].message, 400);
+    }
+
+    res.json({ options: getFinancingOptions(value.amount) });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function createBooking(req: Request, res: Response, next: NextFunction) {
   try {
     const requestId = String(req.params.requestId);
@@ -266,6 +286,14 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
     const totalAmount = subtotal + serviceCharge;
     const selectedVendorIds = Array.from(new Set(pricedQuotes.map((q) => q.vendorId)));
 
+    // Never trust a client-supplied monthlyPayment/totalRepayable - only the chosen planId.
+    // Recomputed here, before the transaction, so an invalid planId 400s before any writes.
+    const financingPlan =
+      value.paymentMethod === 'FINANCED' ? resolvePlan(totalAmount, value.planId) : null;
+    if (value.paymentMethod === 'FINANCED' && !financingPlan) {
+      throw new AppError('Unknown financing plan', 400);
+    }
+
     // Everything below runs in one transaction so the quote-accept step is atomic with
     // booking creation: the conditional updateMany only flips rows that are still
     // SUBMITTED and unbooked, and if a concurrent request already grabbed one of them
@@ -281,6 +309,7 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
           serviceCharge,
           totalAmount,
           status: 'CONFIRMED',
+          paymentMethod: value.paymentMethod,
         },
       });
 
@@ -298,8 +327,40 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
 
       await tx.eventRequest.update({ where: { id: requestId }, data: { status: 'BOOKED' } });
 
+      // Financing decision is Parthian's, made asynchronously via POST /webhooks/parthian
+      // once wired for real - this row starts (and stays, until that webhook fires)
+      // PENDING_REVIEW regardless of what the stub submission below returns.
+      if (financingPlan) {
+        await tx.loanApplication.create({
+          data: {
+            bookingId: createdBooking.id,
+            customerId: customer.id,
+            principalAmount: totalAmount,
+            planId: financingPlan.planId,
+            tenorMonths: financingPlan.tenorMonths,
+            monthlyPayment: financingPlan.monthlyPayment,
+            totalRepayable: financingPlan.totalRepayable,
+          },
+        });
+      }
+
       return createdBooking;
     });
+
+    if (financingPlan) {
+      // Outbound call happens after commit, same reasoning as the S3 upload below - an
+      // external call mid-transaction can't be rolled back if it succeeds but the
+      // surrounding transaction later fails.
+      try {
+        const { parthianReferenceId } = await submitToParthian();
+        await prisma.loanApplication.update({
+          where: { bookingId: booking.id },
+          data: { parthianReferenceId },
+        });
+      } catch (err) {
+        console.error(`[createBooking] failed to submit loan application for booking ${booking.id} to Parthian:`, err);
+      }
+    }
 
     const pdfBuffer = generateBookingBillPdf({
       bookingId: booking.id,
@@ -369,7 +430,11 @@ export async function createBooking(req: Request, res: Response, next: NextFunct
       ...pricedQuotes.map((q) => sendEmail({ to: q.vendor.user.email, ...vendorBookingEmail })),
     ]);
 
-    res.status(201).json({ booking: { ...finalBooking, billPdfUrl } });
+    const loanApplication = financingPlan
+      ? await prisma.loanApplication.findUnique({ where: { bookingId: booking.id } })
+      : null;
+
+    res.status(201).json({ booking: { ...finalBooking, billPdfUrl }, loanApplication });
   } catch (err) {
     next(err);
   }
@@ -399,6 +464,36 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
     );
 
     res.json({ bookings: formatted });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listMyLoans(req: Request, res: Response, next: NextFunction) {
+  try {
+    const customer = await getCustomerOrThrow(req.user!.userId);
+
+    const loans = await prisma.loanApplication.findMany({
+      where: { customerId: customer.id },
+      include: { booking: { include: { request: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const formatted = loans.map((loan) => ({
+      id: loan.id,
+      bookingId: loan.bookingId,
+      eventType: loan.booking.request.eventType,
+      principalAmount: loan.principalAmount,
+      planId: loan.planId,
+      tenorMonths: loan.tenorMonths,
+      monthlyPayment: loan.monthlyPayment,
+      totalRepayable: loan.totalRepayable,
+      status: loan.status,
+      rejectionReason: loan.rejectionReason,
+      createdAt: loan.createdAt,
+    }));
+
+    res.json({ loans: formatted });
   } catch (err) {
     next(err);
   }
