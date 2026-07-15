@@ -161,6 +161,47 @@ export async function getVendorInquiries(req: Request, res: Response, next: Next
   }
 }
 
+/**
+ * A vendor's own confirmed bookings - anchored on Quote.bookingId (the same real FK the
+ * booking-creation transaction writes to) rather than Booking.selectedVendors directly, so
+ * this naturally only ever shows the vendor's own accepted price, not the full booking total
+ * (which includes other vendors' cuts and the service charge - not this vendor's business).
+ */
+export async function listVendorBookings(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = req.user!.userId;
+
+    const vendor = await prisma.vendor.findUnique({ where: { userId } });
+    if (!vendor) {
+      throw new AppError('Vendor profile not found', 404);
+    }
+
+    const acceptedQuotes = await prisma.quote.findMany({
+      where: { vendorId: vendor.id, status: 'ACCEPTED', bookingId: { not: null } },
+      include: { request: true, booking: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    const bookings = acceptedQuotes
+      .filter((q) => q.booking !== null)
+      .map((q) => ({
+        bookingId: q.booking!.id,
+        requestId: q.request.id,
+        eventType: q.request.eventType,
+        eventDate: q.request.eventDate,
+        guestCount: q.request.guestCount,
+        location: q.request.location,
+        myQuoteAmount: q.basePrice,
+        bookingStatus: q.booking!.status,
+        confirmedAt: q.booking!.createdAt,
+      }));
+
+    res.json({ bookings });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function submitQuote(req: Request, res: Response, next: NextFunction) {
   try {
     const requestId = String(req.params.requestId);
