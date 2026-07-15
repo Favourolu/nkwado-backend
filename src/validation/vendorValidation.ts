@@ -13,6 +13,7 @@ export const VENDOR_CATEGORIES = [
   'TRANSPORTATION',
   'FLORIST',
   'PLANNER',
+  'ACCOMMODATION',
 ];
 
 export const onboardVendorSchema = Joi.object({

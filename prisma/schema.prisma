@@ -78,6 +78,7 @@ enum VendorCategory {
   TRANSPORTATION
   FLORIST
   PLANNER
+  ACCOMMODATION
 }
 
 model Vendor {
