@@ -7,6 +7,7 @@ import {
   listRequestsQuerySchema,
   listBookingsQuerySchema,
   pendingVendorsQuerySchema,
+  listVendorsQuerySchema,
 } from '../validation/adminValidation';
 import { sendEmail } from '../services/emailService';
 import { vendorApprovedEmail, vendorRejectedEmail } from '../services/emailTemplates';
@@ -47,6 +48,66 @@ export async function getPendingVendors(req: Request, res: Response, next: NextF
 
     res.json({
       vendors: withDocs,
+      pagination: { total, limit: value.limit, offset: value.offset, hasMore: value.offset + vendors.length < total },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Every vendor on the app regardless of vetting status (PENDING/APPROVED/REJECTED) - unlike
+ * getPendingVendors above, this isn't a vetting queue, so it doesn't resolve document signed
+ * URLs (avoids N presigned-URL round trips per page for a view that's about "who's on the
+ * app", not document review - that already happens on the pending-vetting page).
+ */
+export async function listAllVendors(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { error, value } = listVendorsQuerySchema.validate(req.query);
+    if (error) {
+      throw new AppError(error.details[0].message, 400);
+    }
+
+    const where = {
+      ...(value.status ? { status: value.status } : {}),
+      ...(value.category ? { category: value.category } : {}),
+    };
+
+    const [total, vendors] = await Promise.all([
+      prisma.vendor.count({ where }),
+      prisma.vendor.findMany({
+        where,
+        include: { user: { select: { firstName: true, lastName: true, email: true } }, reviews: { select: { rating: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: value.limit,
+        skip: value.offset,
+      }),
+    ]);
+
+    const formatted = vendors.map((vendor) => {
+      const reviewCount = vendor.reviews.length;
+      const rating = reviewCount > 0 ? vendor.reviews.reduce((sum, r) => sum + r.rating, 0) / reviewCount : null;
+
+      return {
+        id: vendor.id,
+        businessName: vendor.businessName,
+        businessType: vendor.businessType,
+        category: vendor.category,
+        status: vendor.status,
+        location: vendor.location,
+        phoneNumber: vendor.phoneNumber,
+        priceRange: vendor.priceRange,
+        contactName: `${vendor.user.firstName} ${vendor.user.lastName}`,
+        contactEmail: vendor.user.email,
+        rating,
+        reviewCount,
+        verifiedAt: vendor.verifiedAt,
+        createdAt: vendor.createdAt,
+      };
+    });
+
+    res.json({
+      vendors: formatted,
       pagination: { total, limit: value.limit, offset: value.offset, hasMore: value.offset + vendors.length < total },
     });
   } catch (err) {

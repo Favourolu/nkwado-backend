@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate, requireRole } from '../middleware/auth';
 import {
   getPendingVendors,
+  listAllVendors,
   approveVendor,
   rejectVendor,
   listRequests,
@@ -17,6 +18,7 @@ const router = Router();
 
 router.use(authenticate, requireRole('ADMIN'));
 
+router.get('/vendors', listAllVendors);
 router.get('/vendors/pending', getPendingVendors);
 router.post('/vendors/:vendorId/approve', approveVendor);
 router.post('/vendors/:vendorId/reject', rejectVendor);
