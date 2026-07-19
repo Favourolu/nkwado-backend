@@ -1,11 +1,25 @@
 import Joi from 'joi';
 import { EVENT_TYPES } from './customerValidation';
+import { VENDOR_CATEGORIES } from './vendorValidation';
 
 export const rejectVendorSchema = Joi.object({
   rejectionReason: Joi.string().trim().min(1).required(),
 });
 
 export const pendingVendorsQuerySchema = Joi.object({
+  limit: Joi.number().integer().min(1).max(100).default(25),
+  offset: Joi.number().integer().min(0).default(0),
+});
+
+export const VENDOR_STATUSES = ['PENDING', 'APPROVED', 'REJECTED'];
+
+export const listVendorsQuerySchema = Joi.object({
+  status: Joi.string()
+    .valid(...VENDOR_STATUSES)
+    .optional(),
+  category: Joi.string()
+    .valid(...VENDOR_CATEGORIES)
+    .optional(),
   limit: Joi.number().integer().min(1).max(100).default(25),
   offset: Joi.number().integer().min(0).default(0),
 });
